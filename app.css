@@ -1,0 +1,1876 @@
+/* Sublime Text 4 chrome: Mariana color scheme + Default Dark UI theme.
+   Hex values come from sublime-defaults.md; do not "tidy" them. */
+:root {
+  --st-background:       #303841;  /* blue3  */
+  --st-foreground:       #D8DEE9;  /* white3 */
+  --st-caret:            #F9AE58;  /* orange */
+  --st-selection:        rgba(89, 102, 115, 0.7);  /* blue2 */
+  --st-selection-border: #647382;  /* blue4  */
+
+  --st-gutter-bg:        #303841;
+  --st-gutter-fg:        #647382;  /* APPROXIMATION - Mariana defines no gutter fg */
+
+  /* Default Dark.sublime-theme */
+  --st-ui-bg:            #2E3238;
+  --st-sidebar-bg:       #22262A;
+  --st-sidebar-selected: #393F46;
+  --st-sidebar-label:    #CCCCCC;
+  --st-sidebar-heading:  #E6E6E6;
+  --st-text-fg:          #D9D9D9;
+
+  --st-mono: Consolas, Menlo, "DejaVu Sans Mono", "Cascadia Mono", monospace;
+
+  /* Text size (js/ui/textsize.js). Two independent knobs, both written onto
+     this element as inline properties. --ui-scale sizes the chrome and
+     --editor-font-size sizes the document. They are separate on purpose:
+     a phone wants large editor text next to a small sidebar, and browser zoom
+     cannot do that, because it scales both together.
+
+     Everything below multiplies by --ui-scale, so the whole chrome has one
+     number to turn. The steps stay in px rather than rem: named steps read
+     better than thirds of a root em, and the root em is exactly what the
+     editor must not follow. */
+  --ui-scale: 1;
+
+  /* Type: the four sizes the chrome uses for words. */
+  --ui-xs:   calc(11px * var(--ui-scale));  /* hints, markers, small buttons */
+  --ui-sm:   calc(12px * var(--ui-scale));  /* status bar, menus, dialogs */
+  --ui-md:   calc(13px * var(--ui-scale));  /* list rows, section titles */
+  --ui-base: calc(14px * var(--ui-scale));  /* the inherited default */
+  --ui-lg:   calc(18px * var(--ui-scale));  /* settings section headings */
+
+  /* Glyphs: drawn rather than read, so they keep their own larger steps. */
+  --ui-icon:    calc(15px * var(--ui-scale));  /* the hamburgers, the status bar */
+  --ui-icon-sm: calc(14px * var(--ui-scale));  /* the action row (search, file, ...) */
+  --ui-icon-lg: calc(18px * var(--ui-scale));  /* the settings close button */
+  --ui-plus:    calc(22px * var(--ui-scale));  /* the new-buffer "+" */
+
+  /* Boxes that hold the type above. A fixed height would clip its own label
+     once --ui-scale grows the text inside it. */
+  --ui-row-h: calc(26px * var(--ui-scale));  /* settings button, floating hamburger */
+  --ui-top-h: calc(48px * var(--ui-scale));  /* the "+" row, both halves */
+  --ui-sidebar-width: calc(220px * var(--ui-scale));
+
+  /* The editor document. The CodeMirror theme reads this instead of a literal
+     (js/editor/editor.js), which is what makes a size change one style write
+     and never a reconfigure: text, selection and undo history all survive it. */
+  --editor-font-size: 14px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--st-background);
+  color: var(--st-foreground);
+  font-family: var(--st-mono);
+  font-size: var(--ui-base);
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#app {
+  flex: 1;
+  display: flex;
+  min-height: 0;  /* lets the editor pane scroll instead of stretching the page */
+}
+
+/* Column of four: "+" on top, the scroller taking the free height, Recent and
+   settings at the bottom. The scroll and the 8px padding moved off #sidebar
+   onto its parts, so a long buffer list can never push a pinned part out of
+   sight. */
+#sidebar {
+  width: var(--sidebar-width, var(--ui-sidebar-width));
+  flex: 0 0 var(--sidebar-width, var(--ui-sidebar-width));
+  display: flex;
+  flex-direction: column;
+  background: var(--st-sidebar-bg);
+  color: var(--st-sidebar-label);
+  user-select: none;
+  /* Both collapse states animate the box, never its contents: width when the
+     sidebar is docked, transform when it is a drawer (ui/shell.js). */
+  transition: width 0.12s ease, flex-basis 0.12s ease, transform 0.15s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #sidebar { transition: none; }
+}
+
+#sidebar-scroll {
+  flex: 1;
+  min-height: 0;  /* without it the flex item refuses to shrink and never scrolls */
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+
+/* Quiet by design: settings is the least-used control in the chrome, so it
+   reads like the "file"/"folder" row, not like the big "+". */
+#sidebar-settings {
+  flex: 0 0 auto;
+  margin: 4px 8px 8px;
+  padding: 0 8px;
+  height: var(--ui-row-h);
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-sm);
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+#sidebar-settings:hover {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  opacity: 1;
+}
+
+.sidebar-heading {
+  margin: 10px 10px 4px;
+  font-size: var(--ui-xs);
+  font-weight: normal;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--st-sidebar-heading);
+}
+
+/* Recent is a disclosure pinned under the scroller, above settings (user
+   decision, 2026-09-24): closed buffers stay out of sight until expanded, and
+   the heading never scrolls away behind a long list of tabs. Expanded, the
+   list scrolls inside the block; the cap keeps the Open list in view. */
+#recent {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;  /* same reason as #sidebar-scroll: without it the list never scrolls */
+  max-height: 50%;
+}
+#recent[hidden] { display: none; }  /* the display: flex above would beat the attribute */
+#recent-heading { cursor: pointer; }
+#recent-list {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* From server (architecture.md §25) copies Recent's rules, so the two pinned
+   blocks behave alike: closed until clicked, the list scrolls inside the
+   block, and the cap keeps the Open list in view. */
+#fromserver {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;  /* same reason as #sidebar-scroll: without it the list never scrolls */
+  max-height: 50%;
+}
+#fromserver[hidden] { display: none; }  /* the display: flex above would beat the attribute */
+#fromserver-heading { cursor: pointer; }
+#fromserver-list {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* The name of a space over its rows in From server, when more than one space
+   lists there. A label, not a row: no pointer, no hover, nothing to click. */
+.buffer-subheading {
+  padding: 4px 10px 1px;
+  font-size: var(--ui-xs);
+  color: var(--st-gutter-fg);
+  cursor: default;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Header row: the collapse toggle and the primary action side by side. The
+   8px top is what #sidebar's padding used to give the "+", before the scroller
+   took that padding over. */
+#sidebar-top {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  margin: 8px 8px 6px;
+}
+
+/* The primary action. Big on purpose (user decision, 2026-09-01): without
+   Ctrl+N, creating a buffer needs a fast, fat click target. Takes the rest of
+   the header row, about two buffer-row heights tall. */
+#new-buffer {
+  flex: 1;
+  min-width: 0;
+  height: var(--ui-top-h);
+  border: 0;
+  border-radius: 3px;
+  background: var(--st-ui-bg);
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-plus);
+  line-height: 1;
+  cursor: pointer;
+}
+
+#new-buffer:hover {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+}
+
+/* The two hamburgers (ui/shell.js): one in the sidebar header, one floating
+   over the editor once the sidebar is gone. Same look, so the control reads as
+   one control in both states. */
+#sidebar-toggle,
+#sidebar-open {
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-icon);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+#sidebar-toggle:hover,
+#sidebar-open:hover {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  opacity: 1;
+}
+
+#sidebar-toggle {
+  flex: 0 0 calc(32px * var(--ui-scale));
+  height: var(--ui-top-h);
+}
+
+/* Floats in the strip #editor-host reserves for it whenever it is on screen
+   (the padding rules below). Without that strip it would sit on the line
+   numbers, and a button over the text is a button in the way. z-index keeps it
+   under the settings overlay (10), which covers the whole pane. */
+#sidebar-open {
+  position: absolute;
+  left: 2px;
+  top: 4px;
+  z-index: 5;
+  display: none;
+  width: var(--ui-row-h);
+  height: var(--ui-row-h);
+  opacity: 0.5;
+}
+
+/* The floating "+" (ui/newbutton.js). Hidden here and shown by the narrow
+   query below: on a PC the sidebar "+" is one click away, and a button over
+   the text is a button in the way. Inside #editor-host, so it clears the
+   status bar on its own and the drawer (20), its scrim (15) and the settings
+   panel (10) all cover it. Grey, not the caret orange: that colour marks an
+   "on" toggle and focus, nothing else (architecture.md §9). */
+#new-fab {
+  display: none;
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 5;
+  width: calc(52px * var(--ui-scale));
+  height: calc(52px * var(--ui-scale));
+  border: 0;
+  border-radius: 50%;
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  font: inherit;
+  font-size: calc(var(--ui-plus) * 1.3);
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+#new-fab:active { transform: scale(0.94); }
+
+/* The [hidden] rule must outrank the narrow query's display: ui/newbutton.js
+   hides the button with the attribute while the keyboard is up. */
+#new-fab[hidden] { display: none; }
+
+/* Scrim behind the drawer. Hidden here, shown by the narrow query below: a
+   docked sidebar takes nothing away from the editor and needs no scrim. */
+#sidebar-scrim {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+/* Collapse, wide screens: the sidebar gives its width back to the editor.
+   Inside a min-width query on purpose, or these rules would fight the drawer
+   width below. The state classes come from ui/shell.js; with neither class
+   present (the first paint, before the mount) the sidebar is open, which is
+   the wide default. */
+@media (min-width: 701px) {
+  #app.sidebar-closed #sidebar {
+    width: 0;
+    flex-basis: 0;
+    overflow: hidden;
+  }
+
+  #app.sidebar-closed #resizer { display: none; }
+  #app.sidebar-closed #sidebar-open { display: block; }
+
+  /* The strip the floating button lives in. Reserved, not overlaid: the
+     button would otherwise cover the first line numbers. */
+  #app.sidebar-closed #editor-host { padding-left: calc(var(--ui-row-h) + 4px); }
+}
+
+/* Phone: the sidebar becomes a drawer over the editor. A 220px column on a
+   360px screen would leave no editor, so it must not push the layout. Closed
+   is the default here, which is again what the first paint shows. */
+@media (max-width: 700px) {
+  #sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 20;
+    /* Overrides the docked width and the resizer's --sidebar-width: a drag
+       handle makes no sense on a drawer, and a stored PC width could cover
+       the whole phone screen. */
+    width: min(80vw, calc(280px * var(--ui-scale)));
+    flex-basis: auto;
+    transform: translateX(-100%);
+    box-shadow: 0 0 12px rgba(0, 0, 0, 0.4);
+  }
+
+  #app.sidebar-open #sidebar { transform: none; }
+  #app.sidebar-open #sidebar-scrim { display: block; }
+  #resizer { display: none; }
+  #sidebar-open { display: block; }
+  #app.sidebar-open #sidebar-open { display: none; }
+  #new-fab { display: block; }
+
+  /* Reserved whether the drawer is open or not, so opening it never reflows
+     the text underneath. */
+  #editor-host { padding-left: calc(var(--ui-row-h) + 4px); }
+}
+
+/* Disk entry points, one slim row under the big "+". Quiet on purpose: opening
+   a file is a secondary action next to creating a scratch buffer. */
+#open-actions {
+  display: flex;
+  gap: 6px;
+  margin: 0 8px 8px;
+}
+
+/* The hidden attribute would lose to the display:flex above. The row itself
+   always shows (its search and window buttons work everywhere); only the two
+   disk buttons inside it hide where the File System Access API is missing. */
+#open-actions[hidden] { display: none; }
+
+#open-actions button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: calc(22px * var(--ui-scale));
+  padding: 0 4px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--st-ui-bg);
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-xs);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.85;
+  /* Each button measures itself, not the sidebar: the row holds two buttons
+     in Firefox and four in Chrome, and only the button's own width says
+     whether its label still fits. The containment costs nothing here, the
+     button's width comes from flex: 1 and never from its contents. */
+  container: action / inline-size;
+}
+
+/* display: inline-flex above would beat the user agent's [hidden] rule, the
+   same trap as #open-actions[hidden]. ui/sidebar.js hides the disk buttons
+   without the File System Access API and the window button on phones. */
+#open-actions button[hidden] { display: none; }
+
+#open-actions button:hover {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  opacity: 1;
+}
+
+.action-icon {
+  flex: 0 0 auto;
+  width: var(--ui-icon-sm);
+  height: var(--ui-icon-sm);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Icon + 4px gap + a six-letter label at --ui-xs needs about 5.25em of the
+   button's font (measured 57.75px at 11px in DejaVu Sans Mono, the widest of
+   the stack); below that the label would spill, so it folds and the icon
+   stands alone. The query measures the content box, so the 4px padding on
+   each side sits outside the number. em, not px: a container query resolves
+   em against the container's own font-size, so the fold point follows
+   --ui-scale with no second number to keep in step. */
+@container action (max-width: 5.75em) {
+  .action-label { display: none; }
+}
+
+/* Small chrome buttons: statusbar "↻". */
+.icon-button {
+  border: 0;
+  background: transparent;
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-icon);
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.icon-button:hover { opacity: 1; }
+
+#status-update { color: var(--st-gutter-fg); font-size: var(--ui-md); }
+
+/* Spellcheck indicator: the label is the state. Struck through and dimmed
+   means off. The id beats .icon-button:hover on specificity, so the hover
+   rule has to be repeated here or the off state would brighten on hover. */
+#status-spell { color: var(--st-gutter-fg); font-size: var(--ui-sm); }
+#status-spell.off { opacity: 0.35; text-decoration: line-through; }
+#status-spell.off:hover { opacity: 0.6; }
+
+/* Sync indicator, same rules as the spellcheck one next to it: the label is
+   the state, and "off" (an error or offline) dims and strikes it. */
+#status-sync { color: var(--st-gutter-fg); font-size: var(--ui-sm); }
+#status-sync.off { opacity: 0.35; text-decoration: line-through; }
+#status-sync.off:hover { opacity: 0.6; }
+
+/* Note zoom indicator (ui/zoom.js): the label is the percent, and the button
+   only shows while the open note is not at 100 %. A click resets. */
+#status-zoom { color: var(--st-gutter-fg); font-size: var(--ui-sm); }
+
+.buffer-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.buffer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-size: var(--ui-md);
+  color: var(--st-sidebar-label);
+}
+
+.buffer-row:hover { background: #2A2F34; }
+.buffer-row.active { background: var(--st-sidebar-selected); }
+
+/* Reorder by drag (ui/sidebar.js). The row under the pointer fades, and a
+   line marks where it will land: the top edge of the row it goes before, or
+   the bottom edge of the last row. An inset shadow, not a border: a border
+   would move every row below by its width while the pointer is over it. */
+#open-list.reordering { cursor: grabbing; }
+#open-list.reordering .buffer-row { cursor: grabbing; }
+.buffer-row.dragging { opacity: 0.4; }
+.buffer-row.drop-before { box-shadow: inset 0 2px 0 0 var(--st-caret); }
+.buffer-row.drop-after { box-shadow: inset 0 -2px 0 0 var(--st-caret); }
+
+/* Disk marker on a file-backed row. Dim and small: it separates disk from
+   scratch at a glance without competing with the file name. */
+.buffer-mark {
+  flex: 0 0 auto;
+  color: var(--st-gutter-fg);
+  font-size: var(--ui-xs);
+  line-height: 1;
+}
+
+/* Reconnect marker: the file needs a permission grant. Clickable, because
+   requestPermission only works inside a user gesture. */
+.buffer-warn {
+  flex: 0 0 auto;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--st-caret);
+  font: inherit;
+  font-size: var(--ui-xs);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.buffer-warn:hover { opacity: 1; }
+
+.buffer-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* A press on a row may become a drag (ui/sidebar.js); without this a slow
+     one starts selecting titles down the list. On the span, not the row: the
+     rename box replaces this span, and its text must stay selectable. */
+  user-select: none;
+}
+
+/* One section per opened folder, between Open and Recent (architecture.md §9).
+   The heading is the folder name; the rows below it are a lazy tree. */
+.folder-section { margin-top: 8px; }
+
+.folder-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 10px 2px;
+  font-size: var(--ui-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--st-sidebar-heading);
+}
+
+.folder-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Tree rows are denser than buffer rows: a folder can show hundreds at once.
+   padding-left is set per row by ui/sidebar.js, one indent step per level. */
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  cursor: pointer;
+  font-size: var(--ui-md);
+  color: var(--st-sidebar-label);
+}
+
+.tree-row:hover { background: #2A2F34; }
+
+/* Holds the twisty column even on file rows, so names stay aligned. */
+.tree-twisty {
+  flex: 0 0 var(--ui-xs);
+  font-size: var(--ui-xs);
+  line-height: 1;
+  color: var(--st-gutter-fg);
+}
+
+.tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Search in files (architecture.md §16, ui/search.js). The view is the first
+   block of the scroller; the class below hides the lists while it is open, so
+   the results take the whole column instead of sitting on top of it. */
+#sidebar.searching #sidebar-scroll > .sidebar-heading,
+#sidebar.searching #open-actions,
+#sidebar.searching #open-list,
+#sidebar.searching #folder-sections,
+#sidebar.searching #recent,
+#sidebar.searching #fromserver {
+  display: none;
+}
+
+.search-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The heading brings the margins of every other sidebar heading with it. */
+.search-head .sidebar-heading { flex: 1; }
+
+#search-close {
+  flex: 0 0 auto;
+  margin-right: 8px;
+  border: 0;
+  padding: 0 4px;
+  background: transparent;
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-icon-lg);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+#search-close:hover { opacity: 1; }
+
+.search-form {
+  display: flex;
+  gap: 6px;
+  margin: 0 8px 6px;
+}
+
+#search-query {
+  flex: 1;
+  /* Without it the field refuses to shrink and pushes the two buttons out of
+     a 320px drawer. */
+  min-width: 0;
+  height: calc(22px * var(--ui-scale));
+  padding: 0 6px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-background);
+  color: var(--st-foreground);
+  font: inherit;
+  font-size: var(--ui-sm);
+}
+
+/* The same quiet look as the #open-actions row above: both are secondary
+   controls in the same column. */
+#search-case,
+#search-go {
+  flex: 0 0 auto;
+  height: calc(22px * var(--ui-scale));
+  padding: 0 8px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--st-ui-bg);
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-xs);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+#search-case:hover,
+#search-go:hover {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  opacity: 1;
+}
+
+/* The pressed state is the whole feedback for case sensitivity, so it uses the
+   caret orange rather than another shade of grey. */
+#search-case[aria-pressed="true"] {
+  background: var(--st-sidebar-selected);
+  color: var(--st-caret);
+  opacity: 1;
+}
+
+.search-status {
+  margin: 0 10px 6px;
+  font-size: var(--ui-xs);
+  color: var(--st-gutter-fg);
+  /* A folder name has no spaces to break at, and the drawer is 320px wide. */
+  overflow-wrap: anywhere;
+}
+
+.search-note { margin-top: 3px; }
+
+.search-reconnect {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--st-caret);
+  font: inherit;
+  font-size: var(--ui-xs);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.search-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* One heading per file with hits: a sidebar heading, smaller, and cut with an
+   ellipsis because a folder path is as long as the tree is deep. No
+   text-transform though, unlike .sidebar-heading: a path is data, and upper
+   casing it would misspell one on a case-sensitive file system. */
+.search-file {
+  margin: 8px 10px 2px;
+  font-size: var(--ui-xs);
+  letter-spacing: 0.04em;
+  color: var(--st-sidebar-heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* As dense as a tree row: a search can list a thousand of them. */
+.search-hit {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 10px;
+  cursor: pointer;
+  font-size: var(--ui-md);
+  color: var(--st-text-fg);
+}
+
+.search-hit:hover { background: #2A2F34; }
+.search-hit:focus-visible {
+  background: var(--st-sidebar-selected);
+  outline: none;
+}
+
+/* An outline, not the selected background: the active row already has that
+   background, and the focus has to show on it too. */
+.buffer-row:focus-visible,
+.tree-row:focus-visible {
+  outline: 1px solid var(--st-caret);
+  outline-offset: -1px;
+}
+
+/* A fixed slot, so the line texts line up however wide the numbers get. */
+.hit-line {
+  flex: 0 0 calc(26px * var(--ui-scale));
+  text-align: right;
+  font-size: var(--ui-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--st-sidebar-label);
+}
+
+.hit-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The editor's own search-match colors (FIND_HIGHLIGHT in js/editor/editor.js).
+   Mariana has no token for them in :root, and a hit must look the same in the
+   sidebar as it does once the document opens. */
+.search-results mark {
+  background: #FAC761;
+  color: #333333;
+  border-radius: 2px;
+}
+
+/* Rename box, in place of .buffer-title while a rename runs (ui/sidebar.js). */
+.buffer-rename {
+  flex: 1;
+  min-width: 0;
+  padding: 0 4px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 2px;
+  background: var(--st-background);
+  color: var(--st-foreground);
+  font: inherit;
+  font-size: var(--ui-md);
+}
+
+.buffer-close,
+.buffer-more,
+.folder-close {
+  flex: 0 0 auto;
+  width: calc(16px * var(--ui-scale));
+  text-align: center;
+  border: 0;
+  background: transparent;
+  color: var(--st-sidebar-label);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.buffer-close:hover,
+.buffer-more:hover { opacity: 1; }
+
+.folder-close { opacity: 0; }
+.folder-head:hover .folder-close { opacity: 0.7; }
+
+/* A row's buttons leave the layout, not only the view, while the row is idle:
+   the title takes their width and shows more of the name. Opacity alone kept
+   the width and cut the name short for nothing. A row with an open menu is
+   not idle, because the pointer sits in the menu, off the row, and the ⋯ must
+   stay under it. Nor is one with a keyboard-focused button: Escape returns
+   the focus to the ⋯ (ui/menu.js). Hover devices only, see below. */
+@media (hover: hover) {
+  .buffer-row:not(:hover, .active, :has(button:focus-visible, [aria-expanded="true"]))
+    :is(.buffer-close, .buffer-more) { display: none; }
+}
+
+/* The row menu button is a touch device's only way to reach rename, sync and
+   encryption, and a finger has no hover, so it never hides there. The × goes
+   the other way: the menu carries Close, and two small targets side by side on
+   a phone are two chances to close the wrong buffer. */
+@media (hover: none) {
+  .buffer-close { display: none; }
+}
+
+/* Row menu (ui/menu.js). Fixed, body-level, above the drawer (20) and its
+   scrim (15), because it is opened from inside the drawer on a phone. */
+.menu {
+  position: fixed;
+  z-index: 40;
+  min-width: calc(170px * var(--ui-scale));
+  max-width: calc(260px * var(--ui-scale));
+  padding: 4px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 4px;
+  background: var(--st-ui-bg);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  color: var(--st-sidebar-label);
+  font-size: var(--ui-sm);
+}
+
+.menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--ui-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+/* :focus, not only :hover: arrow keys move the focus and nothing else would
+   show where it went. */
+.menu-item:hover:not(:disabled),
+.menu-item:focus {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  outline: none;
+}
+
+.menu-item:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Empty on a plain item, so every label starts at the same x. */
+.menu-check {
+  flex: 0 0 var(--ui-xs);
+  color: var(--st-caret);
+  line-height: 1.4;
+}
+
+.menu-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.menu-label {
+  display: block;
+  line-height: 1.4;
+}
+
+.menu-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--ui-xs);
+  line-height: 1.4;
+  color: var(--st-gutter-fg);
+}
+
+.menu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--st-sidebar-bg);
+}
+/* Scoped to .folder-head, not a bare .folder-close:hover: the rule above is
+   two classes deep, so an unscoped one would lose to it and the × would stay
+   dim under the pointer. */
+.folder-head .folder-close:hover { opacity: 1; }
+
+/* Drag handle between sidebar and editor (ui/resizer.js). Invisible at rest:
+   the panel background colors already draw the boundary. touch-action none is
+   required, or mobile browsers turn the drag into a scroll. */
+#resizer {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+}
+
+#resizer:hover,
+#resizer.dragging { background: var(--st-selection-border); }
+
+#editor-host {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  /* Containing block for the settings overlay, which is inset: 0 against it. */
+  position: relative;
+  background: var(--st-background);
+}
+
+#editor-host .cm-editor { height: 100%; }
+/* The locked placeholder (editor.js createLockedState) is a notice, not text. */
+#editor-host .cm-locked .cm-content { color: var(--st-sidebar-label); font-style: italic; }
+#editor-host .cm-locked .cm-gutters { visibility: hidden; }
+
+/* Settings overlay (js/ui/settings.js, architecture.md §9). Covers the editor
+   area only, so the sidebar stays usable on a PC. z-index because the
+   CodeMirror DOM is appended after this element and is positioned too.
+
+   Inside, the panel is shaped like the app itself: a rail of sections on the
+   left, a document on the right. The document column is capped, or a hint
+   runs 150 characters across a wide pane and a control sits a screen away
+   from its label (the "one wall" of 2026-09-25). */
+#settings-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  overflow-y: auto;
+  /* Keyboard focus scrolls a row out from under the sticky head. */
+  scroll-padding-top: var(--ui-top-h);
+  padding: 0 24px 48px;
+  background: var(--st-ui-bg);
+  color: var(--st-text-fg);
+  outline: none;  /* it takes focus on open only to catch Escape */
+  /* A named container, so the rail folds on the panel's own width and not
+     on the viewport: a narrow editor pane on a PC has no room for it either. */
+  container: settings / inline-size;
+}
+
+/* Phone: one full-screen panel. fixed escapes the editor pane, so the sidebar
+   and the status bar are covered too; there is no room to keep them, and the
+   panel scrolls on its own. */
+@media (max-width: 700px) {
+  #settings-panel {
+    position: fixed;
+    padding: 0 16px 32px;
+  }
+}
+
+/* The head and the body share one centered page width, so the × sits on the
+   right edge of the content and not in a far corner of the pane. */
+.settings-page {
+  max-width: calc(820px * var(--ui-scale));
+  margin: 0 auto;
+}
+
+/* Sticky, so the × stays reachable on a phone without scrolling back up.
+   Its height is also the rail's sticky offset and the panel's scroll
+   padding, so all three read --ui-top-h. */
+.settings-head {
+  position: sticky;
+  top: 0;
+  /* Above the sticky section headings: the next section pushes the current
+     heading up, and it slides under the head, not over it. */
+  z-index: 2;
+  background: var(--st-ui-bg);
+}
+
+.settings-head-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--ui-top-h);
+}
+
+.settings-title {
+  flex: 1;
+  margin: 0;
+  font-size: var(--ui-md);
+  font-weight: normal;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--st-sidebar-heading);
+}
+
+#settings-close { font-size: var(--ui-icon-lg); }
+
+.settings-body {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(40px * var(--ui-scale));
+}
+
+/* The rail: every section by name, with its state word under the ones that
+   have one. A click scrolls the document; the rail is not a second page. */
+.settings-rail {
+  position: sticky;
+  top: var(--ui-top-h);
+  flex: 0 0 calc(160px * var(--ui-scale));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 14px;
+}
+
+.settings-rail-item {
+  display: block;
+  width: 100%;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-md);
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* display above beats the browser's own [hidden]; the Trash entry hides with
+   its section (§22). */
+.settings-rail-item[hidden] { display: none; }
+
+.settings-rail-item:hover { background: var(--st-sidebar-selected); }
+
+/* The same selection as the app's own sidebar. */
+.settings-rail-item[aria-current="true"] {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+}
+
+.settings-rail-status {
+  display: block;
+  font-size: var(--ui-sm);
+  color: var(--st-gutter-fg);
+}
+
+.settings-rail-status:empty { display: none; }
+
+.settings-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: calc(600px * var(--ui-scale));
+}
+
+/* Below this width the rail would squeeze the document under 400px, so the
+   sections stand on their own headings instead. */
+@container settings (max-width: 720px) {
+  .settings-rail { display: none; }
+  .settings-main { max-width: none; }
+}
+
+/* The gap between sections is the section's own bottom padding, not a margin
+   on the next one. A sticky heading stays inside its section's box, so with a
+   margin there would be 36px of scroll with no heading pinned at all; this
+   way the next heading pushes the current one out directly. */
+.settings-section { padding-bottom: calc(36px * var(--ui-scale)); }
+.settings-section:first-child { margin-top: 14px; }
+
+/* One strong rule under the heading, weak rules between the rows: two levels
+   of structure, no boxes.
+
+   Sticky under the head, so the reader always sees which section the rows
+   belong to (most useful on a phone, where there is no rail). The background
+   hides the rows that scroll under it. line-height is fixed because the rows'
+   scroll margin below computes the heading's height from it. */
+.settings-section > h3 {
+  position: sticky;
+  top: var(--ui-top-h);
+  z-index: 1;
+  margin: 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--st-selection-border);
+  background: var(--st-ui-bg);
+  font-size: var(--ui-lg);
+  line-height: 1.4;
+  font-weight: normal;
+  color: var(--st-sidebar-heading);
+}
+
+/* The panel's scroll-padding clears only the head. Keyboard focus on a
+   control also has to clear the pinned heading, so each control in a row
+   carries the heading's height (line + padding + rule) as a scroll margin. */
+.settings-row * { scroll-margin-top: calc(var(--ui-lg) * 1.4 + 9px); }
+
+/* Label left, value right. flex-wrap is load-bearing: an age key is 62
+   characters, it cannot share a phone row with its label, and without the
+   wrap the label column shrinks to zero width and the two texts draw on top
+   of each other (seen on iOS, 2026-09-09). Wrapped, the long value takes the
+   next line by itself. The row gap is small so it still reads as one row. */
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--st-sidebar-bg);
+}
+
+/* The heading's rule stands in for the first row's. */
+.settings-section > h3 + .settings-row { border-top: 0; }
+
+/* The display:flex above would beat the browser's own [hidden] rule, and a
+   conditional row (the persistence request) hides itself through that
+   property. Keep both rules together, like #open-actions. */
+.settings-row[hidden] { display: none; }
+
+/* A note (the About credits) is prose with a link inside, not a label and a
+   control, so it is not a flex row: flex would split its text and its link
+   into separate items. */
+.settings-note:not([hidden]) { display: block; }
+
+/* min-width: 0 lets the flex column shrink below its content width, or the
+   62-character age keys next to it push the row past a phone screen. The
+   basis leaves a control room on the right and still wraps a long value
+   onto its own line. */
+.settings-label {
+  flex: 1 1 calc(240px * var(--ui-scale));
+  min-width: 0;
+}
+
+.settings-hint,
+.settings-note {
+  margin: 3px 0 0;
+  max-width: 66ch;
+  font-size: var(--ui-sm);
+  line-height: 1.5;
+  color: var(--st-gutter-fg);
+}
+
+/* min-width for the same reason as the label above. overflow-wrap alone is
+   not enough: iOS Safari still sizes this flex item to the unbroken key and
+   runs the row off the screen. */
+.settings-value {
+  min-width: 0;
+  color: var(--st-sidebar-label);
+  overflow-wrap: anywhere;
+}
+
+/* A key row (item.block): the value is a public key or a code, too long for
+   the right column, so it takes its own line in an inset block. One click
+   selects the whole key for copying. */
+.settings-row-block .settings-value {
+  flex: 1 0 100%;
+  padding: 8px 10px;
+  border-radius: 3px;
+  background: var(--st-sidebar-bg);
+  color: var(--st-foreground);
+  font-size: var(--ui-sm);
+  line-height: 1.5;
+  -webkit-user-select: all;  /* Safari still wants the prefix for `all` */
+  user-select: all;
+}
+
+.settings-note a { color: #6699CC; }
+
+/* Toggle: a button that shows its own state, so no framework and no invisible
+   checkbox. aria-pressed is both the state and the style hook. The caret
+   orange marks "on" and nothing else on this page, so a lit toggle is found
+   at a glance. */
+.settings-toggle {
+  flex: 0 0 auto;
+  min-width: calc(52px * var(--ui-scale));
+  padding: 3px 10px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--st-gutter-fg);
+  font: inherit;
+  font-size: var(--ui-sm);
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.settings-toggle[aria-pressed="true"] {
+  border-color: var(--st-caret);
+  color: var(--st-caret);
+}
+
+/* Shared with the dialogs (ui/dialog.js) and the history view, so the base
+   look stays; the panel-only size is scoped by id below. */
+.settings-button {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-sidebar-bg);
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-xs);
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.settings-button:hover { background: var(--st-sidebar-selected); }
+
+.settings-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The id-free hover rule above would still fire on a disabled button, and a
+   dead end that lights up under the pointer reads as clickable. */
+.settings-button:disabled:hover { background: var(--st-sidebar-bg); }
+
+#settings-panel .settings-button {
+  padding: 4px 12px;
+  font-size: var(--ui-sm);
+}
+
+/* A mode picker on a list entry (the Spaces list, architecture.md §25). It
+   takes the panel button's frame, so a select and a button side by side in
+   one list look like one family of controls. */
+.settings-select {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-sidebar-bg);
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-sm);
+  line-height: 1.4;
+  cursor: pointer;
+}
+.settings-select:hover { background: var(--st-sidebar-selected); }
+.settings-select:disabled { opacity: 0.4; cursor: default; }
+
+/* One focus ring for everything in the panel, the same as the inputs had. */
+#settings-panel :is(button, input, select, a):focus-visible {
+  outline: 1px solid var(--st-caret);
+  outline-offset: 2px;
+}
+
+/* A list row (the device list, architecture.md §21): the label block on top,
+   one line per entry under it, each with its own button on the right. */
+.settings-row-list {
+  flex-direction: column;
+  align-items: stretch;
+}
+/* The label's flex-basis above is a width. In this column it would be a
+   height, and the entries would start 240px under the hint. */
+.settings-row-list > .settings-label { flex: 0 0 auto; }
+.settings-list { display: flex; flex-direction: column; margin-top: 4px; }
+.settings-list-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0 8px 14px;
+  border-top: 1px solid var(--st-sidebar-bg);
+}
+.settings-list-text { flex: 1; min-width: 0; }
+
+/* Stepper (the two text sizes). The number sits between its two buttons and
+   holds a fixed column, so "+" does not walk sideways as the value grows. */
+.settings-stepper {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-stepper-value {
+  min-width: calc(50px * var(--ui-scale));
+  text-align: center;
+  color: var(--st-sidebar-label);
+  font-size: var(--ui-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Same specificity as the panel-wide button rule above, or that padding
+   would win and the glyph would sit off-center in a wide button. */
+#settings-panel .settings-stepper-button {
+  min-width: calc(30px * var(--ui-scale));
+  padding: 4px 0;
+  text-align: center;
+}
+
+/* Text row (the sync server and token). Same look as a dialog field, but it
+   sits on the row's baseline next to its label instead of under it. */
+.settings-input {
+  flex: 0 1 calc(260px * var(--ui-scale));
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-sidebar-bg);
+  color: var(--st-foreground);
+  font: inherit;
+  font-size: var(--ui-sm);
+}
+
+.settings-input:focus { outline: 1px solid var(--st-caret); }
+
+/* Phone rows are about 350px wide. Keep half of that for the label and its
+   hint, or a medium-length value squeezes the hint into one word per line;
+   a value that no longer fits wraps to its own line instead. An input always
+   takes its own line: a server URL is typed here, not just read. */
+@media (max-width: 700px) {
+  .settings-label { flex: 1 0 55%; }
+  .settings-input { flex: 1 0 100%; }
+}
+
+/* Revision history (js/ui/history.js). A plain list inside a dialog body. */
+.history-list {
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.history-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--st-selection-border);
+  font-size: var(--ui-sm);
+}
+
+.history-when { flex: 0 0 auto; color: var(--st-foreground); }
+.history-meta { flex: 1; min-width: 0; font-size: var(--ui-xs); color: var(--st-gutter-fg); }
+
+/* Native <dialog> prompts (js/ui/dialog.js). Same palette and the same button
+   classes as the settings panel, because they are the same kind of chrome. */
+.vrtti-dialog {
+  min-width: calc(280px * var(--ui-scale));
+  max-width: min(calc(520px * var(--ui-scale)), calc(100vw - 32px));
+  padding: 16px 18px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 4px;
+  background: var(--st-ui-bg);
+  color: var(--st-text-fg);
+  font: inherit;
+}
+
+/* The UA default is a light grey wash that reads as a bug on this chrome. */
+.vrtti-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+
+.dialog-title {
+  margin: 0 0 12px;
+  font-size: var(--ui-md);
+  font-weight: normal;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--st-sidebar-heading);
+}
+
+.dialog-body { display: flex; flex-direction: column; gap: 10px; }
+
+.dialog-field { display: flex; flex-direction: column; gap: 4px; font-size: var(--ui-sm); }
+
+.dialog-input {
+  padding: 5px 7px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-sidebar-bg);
+  color: var(--st-foreground);
+  font: inherit;
+}
+
+.dialog-input:focus { outline: 1px solid var(--st-caret); }
+
+/* iOS Safari zooms the whole page in when it focuses a text field whose font
+   is under 16px, and it never zooms back out: the page then really is wider
+   than the screen, which is what the user meets after one tap on a field.
+   16px is that browser's threshold, not a design choice, so all three inputs
+   (dialog, settings row, sidebar rename) take it on a phone. */
+@media (max-width: 700px) {
+  .dialog-input,
+  .settings-input,
+  .buffer-rename { font-size: max(16px, var(--ui-base)); }
+}
+
+.dialog-error { margin: 0; font-size: var(--ui-xs); color: #EC5F67; }
+.dialog-error[hidden] { display: none; }
+
+/* The one-time recovery key. Monospace and wrapping, because the user reads it
+   off the screen to copy it onto paper; user-select is spelled out so a future
+   app-wide `user-select: none` on chrome cannot silently break that. */
+.dialog-secret {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-background);
+  color: var(--st-caret);
+  font-family: var(--st-mono);
+  font-size: var(--ui-sm);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.dialog-primary {
+  background: var(--st-selection);
+  color: var(--st-sidebar-heading);
+}
+
+.dialog-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-sidebar-bg);
+  color: var(--st-sidebar-label);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dialog-option:hover { background: var(--st-sidebar-selected); }
+
+.dialog-busy { margin: 0; color: var(--st-sidebar-label); }
+
+/* Twemoji widgets (js/editor/emoji.js). Sized in em so they track the editor
+   font. 1.2em is a hair taller than the glyphs around them, but the 1.4
+   line-height of .cm-scroller still has room, so a line with emoji keeps the
+   same height as a line without. inline-block plus the negative baseline
+   offset centers the square on the text, instead of hanging it off the
+   baseline and pushing the line down. */
+img.twemoji {
+  width: 1.2em;
+  height: 1.2em;
+  display: inline-block;
+  vertical-align: -0.25em;
+}
+
+/* The span exists only so the img can be swapped for a text fallback; it must
+   not add a box of its own. */
+.twemoji-wrap { white-space: nowrap; }
+
+#statusbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 3px 10px;
+  background: var(--st-ui-bg);
+  color: var(--st-text-fg);
+  font-size: var(--ui-sm);
+  user-select: none;
+}
+
+/* flex: 1 pushes the save and build stamps to the right edge. */
+#status-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#status-saveas { color: var(--st-gutter-fg); font-size: var(--ui-md); }
+
+#status-save { color: var(--st-gutter-fg); }
+#status-build { color: var(--st-gutter-fg); }
+
+/* ==== Phone mode (architecture.md §9, "Phone mode") ========================
+
+   One block, and every rule that changes the app starts with `html.phone`.
+   The inline script in index.html sets that class on a narrow touch screen
+   outside the desktop shell, so a PC, a narrow window on a PC and the shell
+   never match anything below except the four "hidden by default" rules that
+   come first. Keep it that way: a rule here without the prefix changes the
+   desktop.
+
+   What the mode does: the drawer becomes a full-screen note list with rows a
+   thumb can hit, and the floating "+" becomes the thumb button, which opens
+   three round buttons (ui/thumb.js). Stacking, low to high: the settings
+   panel (10), the note list (20), the scrim of the round buttons (29), the
+   thumb button and the round buttons (30), a row menu (40). */
+
+/* Hidden by default: the parts only phone mode shows. Rows carry a preview
+   and a time everywhere (ui/sidebar.js makeRow), and the settings panel has a
+   phone-only row; outside phone mode none of it may take space. */
+.thumb-icon,
+#thumb-scrim,
+#thumb-menu,
+.buffer-preview,
+.buffer-time,
+.settings-row[data-key="list-rows"] {
+  display: none;
+}
+
+.thumb-icon {
+  width: calc(22px * var(--thumb-scale, 1));
+  height: calc(22px * var(--thumb-scale, 1));
+  /* A block with auto margins sits in the middle of its button, which
+     centres its content box by itself. */
+  margin: auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The bullets of the list icon are zero-length strokes with round caps, so
+   the stroke width is their diameter: a little fatter than the lines. */
+.thumb-icon-dots { stroke-width: 2.25; }
+/* The teeth of the gear: short, thick and square-ended. */
+.thumb-icon-teeth { stroke-width: 2.4; stroke-linecap: butt; }
+
+html.phone {
+  /* The chrome follows --ui-scale, which goes down to 0.7. A touch target
+     must not: 44px is the floor (the user's rule), so everything a thumb
+     hits scales up with the text and never down. */
+  --thumb-scale: max(1, var(--ui-scale));
+  --tap: calc(44px * var(--thumb-scale));
+  --fab: calc(52px * var(--thumb-scale));
+  --fab-gap: 16px;
+  /* The strip at the bottom of the note list that holds the search button
+     and stays clear of rows, so no row ends up under the thumb button. */
+  --list-bar: calc(var(--fab) + 2 * var(--fab-gap));
+}
+
+/* ---- The note list: #sidebar, full screen ------------------------------ */
+
+/* The containing block of the list. The status bar is outside #app, so the
+   list covers the editor and leaves the status bar on screen. */
+html.phone #app { position: relative; }
+
+html.phone #sidebar {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  transform: none;
+  transition: none;
+  box-shadow: none;
+  padding-bottom: var(--list-bar);
+  /* Closed means gone, not moved off screen as the drawer is: the lists
+     redraw on every keystroke (ui/sidebar.js), and the browser would lay out
+     every row of a list nobody sees. The price is that a hidden list cannot
+     scroll its open note into view, so opening it does that (ui/thumb.js). */
+  display: none;
+}
+
+html.phone #app.sidebar-open #sidebar { display: flex; }
+
+/* The drawer's furniture. #app in the selector is there for its weight: the
+   drawer rule that shows the scrim counts two ids. */
+html.phone #app #sidebar-scrim,
+html.phone #sidebar-open,
+html.phone #sidebar-top,
+html.phone #sidebar-settings {
+  display: none;
+}
+
+/* The strip that held the floating hamburger. */
+html.phone #editor-host { padding-left: 0; }
+
+html.phone #sidebar-scroll { padding-top: 6px; }
+html.phone .sidebar-heading { margin: 12px 16px 6px; }
+html.phone .buffer-subheading { padding: 8px 16px 2px; }
+
+/* A row is two lines: marks, title and time on the first, the preview on
+   the second. Wrapping does it, so makeRow's flat markup stays as it is; the
+   preview is 100% wide and therefore always alone on its own line. A row
+   with no preview (From server, a locked note, an empty note) is one line,
+   centred in the same height. */
+html.phone .buffer-row {
+  /* For the ⋯, which leaves the flow below. */
+  position: relative;
+  flex-wrap: wrap;
+  align-content: center;
+  gap: 3px 8px;
+  min-height: calc(56px * var(--thumb-scale));
+  /* The right padding is the ⋯'s column. */
+  padding: 6px var(--tap) 6px 16px;
+  font-size: calc(15px * var(--ui-scale));
+  color: var(--st-sidebar-heading);
+}
+
+html.phone .buffer-preview {
+  display: block;
+  flex: 0 0 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ui-md);
+  color: var(--st-sidebar-label);
+  opacity: 0.6;
+}
+
+/* Longer rows, a setting of the device (ui/sidebar.js): the time of the last
+   change beside the title, and two lines of preview. */
+/* No larger min-height: a row grows with its preview, and a note with no
+   preview keeps the short row instead of a tall empty one. */
+html.phone.rows-long .buffer-row {
+  padding-top: 9px;
+  padding-bottom: 9px;
+}
+
+html.phone.rows-long .buffer-preview {
+  /* The one way to cut text after two lines that every phone browser has. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+html.phone.rows-long .buffer-time {
+  display: block;
+  flex: 0 0 auto;
+  font-size: var(--ui-xs);
+  color: var(--st-gutter-fg);
+}
+
+/* The ⋯ is the only way to the row menu on a phone, so it is a full target:
+   44px wide and as high as the row. `li` and `>` are there for their weight:
+   the hover rule above, which hides the ⋯ of an idle row, must lose even on
+   a phone that claims to hover. height in %, not top and bottom: a button
+   does not stretch between two insets. */
+html.phone li.buffer-row > .buffer-more {
+  display: block;
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: var(--tap);
+  height: 100%;
+  font-size: calc(18px * var(--ui-scale));
+}
+
+/* The menu carries Close; see the (hover: none) rule above. */
+html.phone .buffer-close { display: none; }
+
+html.phone .tree-row { min-height: var(--tap); padding-left: 16px; }
+
+/* The two disclosures are buttons in all but name. */
+html.phone #recent-heading,
+html.phone #fromserver-heading {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);
+  margin: 0;
+  padding: 0 16px;
+}
+
+/* 16px, or iOS zooms the whole page the moment the field takes focus and
+   leaves it zoomed. */
+html.phone .buffer-rename,
+html.phone #search-query {
+  height: var(--tap);
+  font-size: max(16px, var(--ui-base));
+}
+
+html.phone #search-case,
+html.phone #search-go {
+  height: var(--tap);
+  min-width: var(--tap);
+  font-size: var(--ui-sm);
+}
+
+html.phone .search-hit { min-height: var(--tap); align-items: center; }
+html.phone .search-form { margin: 0 16px 8px; }
+
+/* The disk buttons, where a phone browser has them at all. */
+html.phone #open-actions { margin: 0 16px 8px; }
+html.phone #open-actions button { height: var(--tap); font-size: var(--ui-sm); }
+
+/* ---- The bottom bar of the list ---------------------------------------- */
+
+/* No bar element: the search button leaves its row and sits at the bottom
+   left of the list, beside the thumb button, in the strip the list's padding
+   keeps free. Absolute against #sidebar, the nearest positioned ancestor; the
+   scroller between them neither clips nor scrolls it, because the scroller is
+   not its containing block. While the search view is open the row is hidden
+   (the `searching` rules above) and the view's own × takes the same place,
+   so "leave the search" is where "search" was.
+   --keyboard-inset keeps both above the on-screen keyboard, as it does the
+   thumb button (ui/newbutton.js): the search field is at the top, and its ×
+   must not end up under the keys.
+   #open-actions in the selector is there for its weight: the rule above for
+   every button of that row would win otherwise. */
+html.phone #open-actions #search-open,
+html.phone #search-close {
+  position: absolute;
+  left: var(--fab-gap);
+  bottom: calc(var(--fab-gap) + (var(--fab) - var(--tap)) / 2 + var(--keyboard-inset, 0px));
+  /* A width, not a right inset: a button does not stretch between insets. */
+  width: calc(100% - var(--fab) - 3 * var(--fab-gap));
+  height: var(--tap);
+  margin: 0;
+  padding: 0 16px;
+  border-radius: calc(var(--tap) / 2);
+  background: var(--st-ui-bg);
+  color: var(--st-sidebar-label);
+  font-size: var(--ui-base);
+  opacity: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+html.phone #open-actions #search-open {
+  flex: none;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+html.phone #open-actions #search-open .action-icon {
+  width: calc(18px * var(--ui-scale));
+  height: calc(18px * var(--ui-scale));
+}
+
+html.phone #search-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: var(--ui-icon-lg);
+}
+
+/* The × alone would be a 44px-high bar with one small sign in it. */
+html.phone #search-close::after {
+  content: "close search";
+  font-size: var(--ui-base);
+}
+
+/* ---- The thumb button and its round buttons ----------------------------- */
+
+/* Above the note list now (30 over 20), where the drawer used to cover it:
+   it is the way out of the list. --keyboard-inset is the height of the
+   on-screen keyboard over the editor pane (ui/newbutton.js); the button
+   rides on top of the keys, because in phone mode it is the only way to the
+   list and to settings, and an iPhone has no key that closes the keyboard. */
+html.phone #new-fab {
+  z-index: 30;
+  right: var(--fab-gap);
+  bottom: calc(var(--fab-gap) + var(--keyboard-inset, 0px));
+  width: var(--fab);
+  height: var(--fab);
+  /* Hides the "+", a bare text node, and nothing else: the icons are sized
+     in px. */
+  font-size: 0;
+}
+
+/* The sign: three lines closed, a cross while the round buttons are out.
+   ui/thumb.js owns aria-expanded. */
+html.phone #new-fab .fab-menu { display: block; }
+html.phone #new-fab[aria-expanded="true"] .fab-menu { display: none; }
+html.phone #new-fab[aria-expanded="true"] .fab-close { display: block; }
+
+html.phone #thumb-scrim:not([hidden]) {
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 29;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+/* A point on the centre of the thumb button; the buttons hang off it. */
+html.phone #thumb-menu:not([hidden]) {
+  display: block;
+  position: absolute;
+  z-index: 30;
+  right: calc(var(--fab-gap) + var(--fab) / 2);
+  bottom: calc(var(--fab-gap) + var(--fab) / 2 + var(--keyboard-inset, 0px));
+  width: 0;
+  height: 0;
+}
+
+/* 48px buttons, centres 80px from the centre of the thumb button and 45
+   degrees apart. That leaves 13px between two neighbours; 44px buttons at
+   70px would leave under 10. Both numbers scale together, or the buttons
+   would grow into each other. */
+html.phone #thumb-menu button {
+  --size: calc(48px * var(--thumb-scale));
+  --reach: calc(80px * var(--thumb-scale));
+  position: absolute;
+  left: calc(var(--size) / -2);
+  top: calc(var(--size) / -2);
+  width: var(--size);
+  height: var(--size);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+/* The quarter circle: New straight up, Settings straight left, and between
+   them the button that changes the screen (0.7071 is the cosine of 45°). */
+html.phone #thumb-new { transform: translate(0, calc(var(--reach) * -1)); }
+html.phone #thumb-list {
+  transform: translate(calc(var(--reach) * -0.7071), calc(var(--reach) * -0.7071));
+}
+html.phone #thumb-settings { transform: translate(calc(var(--reach) * -1), 0); }
+
+/* Not a scale, as #new-fab:active has: transform holds the button's place. */
+html.phone #thumb-menu button:active { background: var(--st-selection-border); }
+
+html.phone #thumb-menu button:focus-visible,
+html.phone #new-fab:focus-visible {
+  outline: 2px solid var(--st-caret);
+  outline-offset: 2px;
+}
+
+html.phone #thumb-menu .thumb-icon { display: block; }
+
+/* The middle button: the list on a note, the arrow back on the list. It
+   reads the state where ui/shell.js keeps it, the class on #app, so it can
+   never disagree with what is on screen. */
+html.phone #thumb-menu .thumb-icon-back,
+html.phone #app.sidebar-open #thumb-menu .thumb-icon-list { display: none; }
+html.phone #app.sidebar-open #thumb-menu .thumb-icon-back { display: block; }
+
+/* The settings panel is full screen on a phone and has its own ×. It sits
+   under the thumb button now (10 under 30), so the button has to step aside
+   by itself. On the `hidden` attribute, which is how ui/settings.js shows
+   and hides the panel. */
+html.phone #editor-host:has(#settings-panel:not([hidden])) :is(#new-fab, #thumb-menu, #thumb-scrim) {
+  display: none;
+}
+
+/* The buttons grow out of the thumb button. An animation, not a transition:
+   it runs when `hidden` goes, which a transition cannot see. `from` only, so
+   each button ends on its own transform above. */
+@keyframes thumb-out {
+  from { opacity: 0; transform: scale(0.6); }
+}
+
+@keyframes thumb-dim {
+  from { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html.phone #thumb-menu button { animation: thumb-out 0.12s ease-out; }
+  html.phone #thumb-scrim { animation: thumb-dim 0.12s ease-out; }
+}
+
+/* ---- Menus and settings ------------------------------------------------- */
+
+/* Every row of the list opens the row menu, and its entries are 27px high
+   for a mouse. */
+html.phone .menu { font-size: var(--ui-base); }
+
+html.phone .menu-item {
+  align-items: center;
+  min-height: var(--tap);
+  padding: 6px 12px;
+  font-size: var(--ui-base);
+}
+
+/* The row-length setting only means something here, and the sidebar "+" it
+   replaces in this list is not on screen in phone mode. */
+html.phone .settings-row[data-key="list-rows"] { display: flex; }
+html.phone .settings-row[data-key="sidebar-new"] { display: none; }

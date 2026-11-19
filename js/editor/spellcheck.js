@@ -1,0 +1,568 @@
+// @ts-check
+// Offline spellcheck (architecture.md §11): English through Harper, Czech
+// through Hunspell, both vendored WebAssembly modules. Findings become
+// CodeMirror diagnostics: a dotted underline, a hover tooltip, and one-click
+// fixes.
+//
+// Which engine sees which text is decided per paragraph by textlang.js. The
+// English paragraphs go to Harper with the Czech ones blanked out, so Harper
+// keeps document context and offsets stay untouched; the Czech paragraphs are
+// tokenized here and each word is asked of Hunspell. A document without a
+// Czech paragraph never loads the Czech dictionary at all.
+//
+// Nothing here touches the document by itself. The only writes are the
+// dispatches a user makes by clicking a suggestion button.
+
+import { EditorView, ViewPlugin, keymap } from "@codemirror/view";
+import { language } from "@codemirror/language";
+import { forEachDiagnostic, forceLinting, linter } from "@codemirror/lint";
+import { openMenu } from "../ui/menu.js";
+import * as hunspell from "./hunspell.js";
+import { languagesOf, segments } from "./textlang.js";
+
+// Resolved against the document, which is index.html, not against this
+// module: Harper fetches the binary with a plain fetch(), which resolves
+// relative URLs against the page. "./vendor/..." is therefore correct and
+// "../../vendor/..." would be wrong.
+const WASM_URL = "./vendor/harper/harper_wasm_slim_bg.wasm";
+
+// The "slim" build is Harper without the typst parser and the thesaurus, and
+// it is the flavor its own loader handles cleanly: asking for "full" makes
+// harper.js fetch and instantiate the slim binary *first*, so a full setup
+// costs two 15 MB downloads unless the slim one 404s. One binary, one fetch.
+const WASM_FLAVOR = "slim";
+
+const STORAGE_KEY = "vrtti.spellcheck";
+
+// Sublime shows spelling errors while you type but not on every keystroke.
+// 600 ms is long enough that a fast typist never triggers a pass mid-word.
+const LINT_DELAY = 600;
+
+// Harper is fast (measured: 10,400 characters in 80 ms in Chromium) but it
+// runs on the main thread, and each pass copies the whole document to wasm.
+// At 100,000 characters a pass costs the better part of a second, which is a
+// visible freeze. Long documents get no spellcheck rather than a stutter.
+// A worker (harper.js also ships WorkerLinter) is the way to lift this cap.
+const MAX_DOC_CHARS = 100000;
+
+// Harper offers up to a dozen spellings for a badly mangled word. The tooltip
+// is a row of buttons, so past a handful it stops being a quick fix.
+const MAX_ACTIONS = 5;
+
+// Harper's lint_kind() strings are: Agreement, BoundaryError, Capitalization,
+// Eggcorn, Enhancement, Formatting, Grammar, Malapropism, Miscellaneous,
+// Nonstandard, Punctuation, Readability, Redundancy, Regionalism, Repetition,
+// Spelling, Style, Typo, Usage, WordChoice, WordOrder.
+// Only a word that is not a word gets the red "warning" underline. Everything
+// else is an opinion about grammar or style and gets the quieter "info" one.
+const WARNING_KINDS = new Set(["Spelling", "Typo"]);
+
+// Harper parses its input as Markdown and has no mode for anything else, so a
+// JSON or JavaScript buffer would get every identifier underlined as a
+// misspelling. Those buffers get no diagnostics at all (architecture.md §9).
+//
+// The mode is read from the state's own `language` facet instead of a getter
+// the editor module sets. The facet already travels with each EditorState, so
+// a parked buffer and the live one are both right with no wiring, no shared
+// mutable variable, and no way for the two to disagree. `@codemirror/language`
+// is already in the tree, so this costs no new dependency.
+// A state with no language extension at all still gets spellcheck: plain text
+// is exactly what Harper is for.
+const MARKDOWN = "markdown";
+
+/** @param {EditorView} view */
+function isProse(view) {
+  const mode = view.state.facet(language);
+  return !mode || mode.name === MARKDOWN;
+}
+
+// SuggestionKind from harper.js, compared numerically so the enum is not
+// needed before the module loads. The third value, Replace = 0, is the common
+// case and needs no constant: it is what toAction falls through to.
+const REMOVE = 1;
+const INSERT_AFTER = 2;
+
+/** @type {Set<EditorView>} */
+const views = new Set();
+
+/** @type {Promise<any> | null} */
+let loading = null;
+/** @type {any} */
+let engine = null;
+let engineBroken = false;
+
+let enabled = readEnabled();
+
+// The languages found in the document of the last lint pass, most frequent
+// first. Empty while off, for code buffers, and before the first pass.
+/** @type {import("./textlang.js").Lang[]} */
+let detected = [];
+
+// Whether this module already asked hunspell.js to load. One request is
+// enough: the load promise is shared, and its completion repaints once.
+let czechRequested = false;
+
+// Fires "change" on every flip of `enabled` and on every change of the
+// detected languages. The state lives in this module, so the notification
+// does too: the statusbar indicator and the settings panel both render from
+// it, and neither has to know which one flipped it.
+export const events = new EventTarget();
+
+// The lint plugin only re-runs when the document changes. Neither the toggle
+// nor the engine finishing its load changes text, so both bump this counter,
+// and `needsRefresh` then reports the last pass as stale. See relintAll.
+let generation = 0;
+let lintedGeneration = 0;
+
+/**
+ * Re-run the lint pass on every open editor, now.
+ *
+ * Three steps, all required. forceLinting() only runs a pass that is already
+ * *pending*, and the lint plugin marks one pending on a document change alone.
+ * Bumping the counter makes needsRefresh report the last pass as stale, the
+ * empty transaction is what makes the plugin ask needsRefresh at all, and the
+ * force then runs the scheduled pass immediately instead of after the delay.
+ */
+function relintAll() {
+  generation++;
+  for (const view of views) {
+    view.dispatch({});
+    forceLinting(view);
+  }
+}
+
+function readEnabled() {
+  try {
+    // Default on: absent means "never toggled", not "off".
+    return localStorage.getItem(STORAGE_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+/** @returns {boolean} */
+export function isEnabled() {
+  return enabled;
+}
+
+/**
+ * The languages the last pass found in the active document.
+ * @returns {import("./textlang.js").Lang[]}
+ */
+export function detectedLanguages() {
+  return detected;
+}
+
+/** @param {import("./textlang.js").Lang[]} langs */
+function setDetected(langs) {
+  if (langs.join() === detected.join()) return;
+  detected = langs;
+  events.dispatchEvent(new Event("change"));
+}
+
+/**
+ * Turn spellcheck on or off and repaint the open editors at once.
+ * @param {boolean} on
+ */
+export function setEnabled(on) {
+  if (on === enabled) return;
+  enabled = on;
+  try {
+    localStorage.setItem(STORAGE_KEY, on ? "on" : "off");
+  } catch {
+    // Private mode with storage denied: the toggle still works this session.
+  }
+  events.dispatchEvent(new Event("change"));
+  relintAll();
+}
+
+/**
+ * Load the Harper engine once, in the background. Returns null until the wasm
+ * is ready, so the first lint passes cost nothing and app startup pays nothing.
+ * @returns {any}
+ */
+function harperOrLoad() {
+  if (engine || engineBroken) return engine;
+  if (!loading) {
+    // Bare specifier, resolved by the import map like every other dependency.
+    loading = import("harper.js")
+      .then(async (harper) => {
+        const binary = harper.createBinaryModuleFromUrl(WASM_URL, WASM_FLAVOR);
+        const local = new harper.LocalLinter({ binary });
+        await local.setup();
+        engine = local;
+        // The pass that started this load returned []. Nothing else will ask
+        // for a new one until the user types, so ask on its behalf.
+        relintAll();
+      })
+      .catch((err) => {
+        // One report, then stay quiet: retrying would re-fetch 15 MB on every
+        // keystroke. The editor keeps working without spellcheck.
+        engineBroken = true;
+        console.error("[vrtti] Harper failed to load", err);
+      });
+  }
+  return null;
+}
+
+/**
+ * One Harper suggestion becomes one diagnostic action button.
+ * @param {any} suggestion
+ * @returns {import("@codemirror/lint").Action}
+ */
+function toAction(suggestion) {
+  const kind = suggestion.kind();
+  const text = suggestion.get_replacement_text();
+  const name = kind === REMOVE ? "Remove" : text;
+  return {
+    name,
+    // from/to are the diagnostic's *current* positions: @codemirror/lint maps
+    // them through every edit made since the pass ran, so a stale suggestion
+    // still lands on the right word.
+    apply: (view, from, to) => {
+      const change =
+        kind === INSERT_AFTER
+          ? { from: to, to, insert: text }
+          : { from, to, insert: kind === REMOVE ? "" : text };
+      // The caret lands after the fix, where typing continues; left to the
+      // mapping it would sit before the word, as the old range collapsed.
+      view.dispatch({
+        changes: change,
+        selection: { anchor: change.from + change.insert.length },
+        userEvent: "input.complete",
+      });
+    },
+  };
+}
+
+/**
+ * One Harper lint becomes one CodeMirror diagnostic.
+ *
+ * Offsets are UTF-16 code-unit indices, the same units CodeMirror counts, so
+ * no conversion happens here. That is verified, not assumed: linting
+ * "😀😀 speling errr" in Chromium returns span [5, 12] for "speling", and
+ * text.slice(5, 12) === "speling". Code-point offsets would have been [3, 10]
+ * and the underline would sit two characters to the left of the word. The
+ * Playwright case that locks this down types exactly that string and asserts
+ * the underlined text.
+ *
+ * The wasm objects are freed as we go. They are Rust allocations that a
+ * FinalizationRegistry would eventually reclaim, but a pass over a long
+ * document makes hundreds of them every 600 ms, so waiting for GC lets wasm
+ * memory drift upward. Everything needed is copied out first.
+ *
+ * @param {any} lint
+ * @returns {import("@codemirror/lint").Diagnostic}
+ */
+function toDiagnostic(lint) {
+  const span = lint.span();
+  const from = span.start;
+  const to = span.end;
+  span.free();
+
+  const suggestions = lint.suggestions();
+  const actions = [];
+  for (let i = 0; i < suggestions.length; i++) {
+    if (i < MAX_ACTIONS) actions.push(toAction(suggestions[i]));
+    suggestions[i].free();
+  }
+
+  const diagnostic = {
+    from,
+    to,
+    severity: WARNING_KINDS.has(lint.lint_kind()) ? "warning" : "info",
+    message: lint.message(),
+    // Rendered small under the message, e.g. "Spelling", "Word Choice".
+    source: lint.lint_kind_pretty(),
+    actions,
+  };
+  lint.free();
+  return /** @type {import("@codemirror/lint").Diagnostic} */ (diagnostic);
+}
+
+/**
+ * Blank out the given ranges with spaces, one per character, so the result
+ * has the same length and the same line breaks as the input. Harper then
+ * lints the English paragraphs in place and every span it reports is already
+ * a document offset.
+ * @param {string} text
+ * @param {readonly { from: number, to: number }[]} ranges
+ */
+function blank(text, ranges) {
+  let out = "";
+  let at = 0;
+  for (const r of ranges) {
+    out += text.slice(at, r.from) + text.slice(r.from, r.to).replace(/[^\n]/g, " ");
+    at = r.to;
+  }
+  return out + text.slice(at);
+}
+
+/**
+ * @param {{ from: number, to: number }} d
+ * @param {readonly { from: number, to: number }[]} ranges
+ */
+function overlaps(d, ranges) {
+  return ranges.some((r) => d.from < r.to && d.to > r.from);
+}
+
+// A word for the Czech pass: letters, with inner hyphens and apostrophes kept
+// so "česko-anglický" and "don't" are one token each. Hunspell splits at
+// hyphens itself (the default BREAK rule).
+const WORD = /[\p{L}\p{M}]+(?:[-'’][\p{L}\p{M}]+)*/gu;
+
+// Inside a paragraph, the parts that are not prose: inline code, URLs, email
+// addresses, link destinations and HTML tags. Harper's Markdown parser skips
+// these on its own; the Czech pass blanks them before tokenizing. Each match
+// is replaced one space per character so offsets stay put.
+const NOT_PROSE = [
+  /`[^`\n]*`/g,
+  /https?:\/\/\S+|www\.\S+/g,
+  /\S+@\S+\.\S+/g,
+  /\]\([^)\n]*\)/g,
+  /<[^>\n]+>/g,
+];
+
+/** @param {string} text */
+function proseOnly(text) {
+  for (const re of NOT_PROSE) text = text.replace(re, (m) => " ".repeat(m.length));
+  return text;
+}
+
+/**
+ * Words the Czech pass leaves alone: acronyms (all caps, "USB"), tokens glued
+ * to digits ("5km" yields "km"), and anything outside the Latin script.
+ * @param {string} word
+ * @param {string} before  The character before the word, "" at a boundary.
+ * @param {string} after   The character after it.
+ */
+function skipWord(word, before, after) {
+  if (word.length > 1 && word === word.toUpperCase()) return true;
+  if (/\d/.test(before) || /\d/.test(after)) return true;
+  return !/^[\p{Script=Latin}\p{M}'’-]+$/u.test(word);
+}
+
+/**
+ * A replacement action for the Czech pass: the whole misspelled range becomes
+ * the suggestion. Same positional contract as toAction.
+ * @param {string} text
+ * @returns {import("@codemirror/lint").Action}
+ */
+function replaceWith(text) {
+  return {
+    name: text,
+    apply: (view, from, to) =>
+      view.dispatch({
+        changes: { from, to, insert: text },
+        selection: { anchor: from + text.length },
+        userEvent: "input.complete",
+      }),
+  };
+}
+
+/**
+ * Diagnostics for the Czech paragraphs. Each distinct word is asked of
+ * Hunspell once per pass; suggestions come from hunspell.js under its time
+ * budget, and the words that miss it are filled in idle time, after which
+ * the pass is re-run (see hunspell.fillIdle).
+ * @param {string} text
+ * @param {readonly { from: number, to: number }[]} ranges
+ * @returns {import("@codemirror/lint").Diagnostic[]}
+ */
+function czechDiagnostics(text, ranges) {
+  const budget = hunspell.newBudget();
+  /** @type {Map<string, string[] | null | true>} true = a known word */
+  const verdicts = new Map();
+  /** @type {import("@codemirror/lint").Diagnostic[]} */
+  const out = [];
+
+  for (const r of ranges) {
+    const para = proseOnly(text.slice(r.from, r.to));
+    for (const m of para.matchAll(WORD)) {
+      const word = m[0];
+      const start = /** @type {number} */ (m.index);
+      if (skipWord(word, para[start - 1] ?? "", para[start + word.length] ?? "")) continue;
+
+      let verdict = verdicts.get(word);
+      if (verdict === undefined) {
+        verdict = hunspell.isWord(word) ? true : hunspell.suggest(word, budget);
+        verdicts.set(word, verdict);
+      }
+      if (verdict === true) continue;
+
+      out.push({
+        from: r.from + start,
+        to: r.from + start + word.length,
+        severity: "warning",
+        message: "“" + word + "” is not in the Czech dictionary.",
+        source: "Spelling (Czech)",
+        actions: (verdict ?? []).map(replaceWith),
+      });
+    }
+  }
+  hunspell.fillIdle(relintAll);
+  return out;
+}
+
+/**
+ * The lint source. Runs on the main thread; see MAX_DOC_CHARS.
+ * @param {EditorView} view
+ * @returns {Promise<readonly import("@codemirror/lint").Diagnostic[]>}
+ */
+async function spellSource(view) {
+  lintedGeneration = generation;
+  if (!enabled || !isProse(view) || view.state.doc.length > MAX_DOC_CHARS) {
+    setDetected([]);
+    return [];
+  }
+
+  const text = view.state.doc.toString();
+  const segs = segments(text);
+  setDetected(languagesOf(segs));
+
+  const czech = segs.filter((s) => !s.code && s.lang === "cs");
+  const hasEnglish = segs.some((s) => !s.code && s.lang === "en");
+
+  /** @type {import("@codemirror/lint").Diagnostic[]} */
+  const out = [];
+
+  if (hasEnglish) {
+    const harper = harperOrLoad();
+    if (harper) {
+      // No `language` option: Harper defaults to Markdown, which is what the
+      // editor's own language mode assumes, and it keeps code fences out.
+      const lints = await harper.lint(blank(text, czech));
+      for (const lint of lints) {
+        // toDiagnostic frees the wasm objects either way. A lint that leaks
+        // into a blanked range is whitespace noise, never a finding.
+        const d = toDiagnostic(lint);
+        if (!overlaps(d, czech)) out.push(d);
+      }
+    }
+  }
+
+  if (czech.length > 0) {
+    if (hunspell.isReady()) {
+      out.push(...czechDiagnostics(text, czech));
+    } else if (!czechRequested) {
+      // Same shape as Harper: the pass that triggers the load returns
+      // without Czech findings, and the load's completion re-runs it.
+      czechRequested = true;
+      hunspell.load().then(relintAll, () => {});
+    }
+  }
+  return out;
+}
+
+// The view set drives forceLinting from setEnabled and from the engine load,
+// neither of which is triggered by the editor itself.
+const trackViews = ViewPlugin.define((view) => {
+  views.add(view);
+  return { destroy: () => views.delete(view) };
+});
+
+// Mariana (sublime-defaults.md part 2.3), same palette as marianaTheme in
+// editor.js. Dotted rather than CodeMirror's default squiggle, and set through
+// text-decoration, which is why .cm-lintRange loses the base theme's
+// background-image: the two would otherwise draw one line each.
+const SPELLING = "#EC5F66"; // Mariana red
+const HINT = "#6699CC"; // Mariana blue
+const PANEL_BG = "#2E3238";
+const PANEL_FG = "#D9D9D9";
+const BORDER = "#647382";
+
+const spellcheckTheme = EditorView.theme({
+  ".cm-lintRange": {
+    backgroundImage: "none",
+    paddingBottom: "0",
+    textDecorationLine: "underline",
+    textDecorationStyle: "dotted",
+    textDecorationSkipInk: "none",
+    textUnderlineOffset: "0.18em",
+  },
+  ".cm-lintRange-warning": { textDecorationColor: SPELLING },
+  ".cm-lintRange-info": { textDecorationColor: HINT },
+  ".cm-lintRange-active": { backgroundColor: "rgba(236, 95, 102, 0.18)" },
+
+  // The hover tooltip. CodeMirror renders it inside the editor's own DOM, so
+  // the theme reaches it; without these rules it falls back to the light
+  // default and glares against Mariana.
+  ".cm-tooltip": {
+    backgroundColor: PANEL_BG,
+    color: PANEL_FG,
+    border: "1px solid " + BORDER,
+  },
+  ".cm-tooltip .cm-tooltip-arrow:before": {
+    borderTopColor: BORDER,
+    borderBottomColor: BORDER,
+  },
+  ".cm-tooltip .cm-tooltip-arrow:after": {
+    borderTopColor: PANEL_BG,
+    borderBottomColor: PANEL_BG,
+  },
+  ".cm-tooltip-lint": { maxWidth: "32em" },
+  ".cm-diagnostic-warning": { borderLeft: "3px solid " + SPELLING },
+  ".cm-diagnostic-info": { borderLeft: "3px solid " + HINT },
+  ".cm-diagnosticAction": {
+    backgroundColor: "#22262A",
+    color: PANEL_FG,
+    border: "1px solid " + BORDER,
+    borderRadius: "2px",
+  },
+  ".cm-diagnosticAction:hover": { backgroundColor: "#393F46" },
+});
+
+/**
+ * Visual Studio's Ctrl+. (user request, 2026-10-17): the suggestions for the
+ * word under the caret as a menu (ui/menu.js), so a misspelling is fixed
+ * without the mouse. Arrows pick, Enter applies, Escape goes back to the
+ * text. The hover tooltip stays for the pointer. With no diagnostic under
+ * the caret the key is left alone.
+ * @type {import("@codemirror/view").Command}
+ */
+function fixAtCursor(view) {
+  const head = view.state.selection.main.head;
+  /** @type {{d: import("@codemirror/lint").Diagnostic, from: number, to: number}[]} */
+  const hits = [];
+  forEachDiagnostic(view.state, (d, from, to) => {
+    // The caret at either edge of the word counts: that is where it stands
+    // right after the word was typed.
+    if (from <= head && head <= to) hits.push({ d, from, to });
+  });
+  const hit = hits[0];
+  if (!hit) return false;
+  const { d, from, to } = hit;
+  // from/to are the diagnostic's current positions, as the lint package
+  // maps them (see toAction). A menu without a fix still has one item, so
+  // Enter or Escape dismisses it like any other.
+  const items = d.actions?.length
+    ? d.actions.map((action) => ({ label: action.name, act: () => action.apply(view, from, to) }))
+    : [{ label: "No suggestions" }];
+  const at = view.coordsAtPos(from);
+  if (!at) return false;
+  // The editor's content is the anchor: that is where the focus returns.
+  openMenu(view.contentDOM, items, { at });
+  return true;
+}
+
+/**
+ * The spellcheck extension. No lint gutter on purpose: underlines and hover
+ * tooltips only, so the gutter keeps showing line numbers alone.
+ * @returns {import("@codemirror/state").Extension}
+ */
+export function spellcheck() {
+  return [
+    keymap.of([{ key: "Mod-.", run: fixAtCursor }]),
+    linter(spellSource, {
+      delay: LINT_DELAY,
+      // The second test catches a mode switch. A compartment reconfigure
+      // changes no text, so without it the underlines from the old mode would
+      // stay on screen until the user typed again.
+      needsRefresh: (update) =>
+        generation !== lintedGeneration ||
+        update.startState.facet(language) !== update.state.facet(language),
+    }),
+    trackViews,
+    spellcheckTheme,
+  ];
+}

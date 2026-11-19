@@ -1,0 +1,150 @@
+// @ts-check
+// The disk facade (architecture.md §2, §17). Two backends live behind it: the
+// browser's File System Access API, wrapped thinly, and the desktop shell's
+// native backend (storage/native.js). Only the pickers differ; after a pick
+// both hand back a handle with the same twelve methods, so everything below
+// the pickers is one code path. This module knows nothing about buffers or
+// records: it only turns handles into text and text into files. model/docs.js
+// owns the policy.
+//
+// Two rules hold this layer together:
+//  - Every entry point is read off `window` at call time, never destructured at
+//    import time. The tests stub window.showOpenFilePicker / showSaveFilePicker
+//    with OPFS handles, and a stub installed after this module loads must still
+//    win.
+//  - Nothing is caught here. A denied permission, a deleted file, or a
+//    cancelled picker is a decision for the caller, not a silent failure.
+//    sameEntry() is the one exception, and says why at the catch.
+
+import { isDesktop } from "../model/capabilities.js";
+import { isNativeHandle, pickFile, pickFolder, pickSave } from "./native.js";
+
+/** @typedef {any} FileHandle FileSystemFileHandle; no lib.dom types without a build step. */
+/** @typedef {any} DirHandle FileSystemDirectoryHandle. */
+/** @typedef {{ name: string, kind: 'file'|'directory', handle: any }} DirEntry */
+
+// The three pickers test isDesktop before the browser API, never the other way
+// round: WebView2 on Windows has both, and the shell must take the native path
+// there too (architecture.md §17). It is the one place a backend is chosen; a
+// handle carries its own backend from then on.
+
+/**
+ * @returns {Promise<FileHandle>} Rejects with AbortError when the user cancels.
+ */
+export async function openFilePicker() {
+  if (isDesktop) return pickFile();
+  const handles = await window.showOpenFilePicker({ multiple: false });
+  return handles[0];
+}
+
+/**
+ * @returns {Promise<DirHandle>} Rejects with AbortError when the user cancels.
+ */
+export async function openDirectoryPicker() {
+  if (isDesktop) return pickFolder();
+  // "readwrite" up front: the tree exists to open files for editing, and a
+  // second prompt on the first save would be the worse moment to ask.
+  return window.showDirectoryPicker({ mode: "readwrite" });
+}
+
+/**
+ * One directory level, in the order the sidebar draws it: directories first,
+ * then files, each group A-Z. Sorting here keeps the tree renderer dumb.
+ * @param {DirHandle} dirHandle @returns {Promise<DirEntry[]>}
+ */
+export async function listDirectory(dirHandle) {
+  /** @type {DirEntry[]} */
+  const entries = [];
+  for await (const handle of dirHandle.values()) {
+    entries.push({ name: handle.name, kind: handle.kind, handle });
+  }
+  entries.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "directory" ? -1 : 1;
+    // localeCompare, not <: it sorts "Zebra" before "apple" the way a file
+    // manager does, instead of by code point.
+    return a.name.localeCompare(b.name);
+  });
+  return entries;
+}
+
+/** @param {string} suggestedName @returns {Promise<FileHandle>} */
+export async function saveFilePicker(suggestedName) {
+  if (isDesktop) return pickSave(suggestedName);
+  return window.showSaveFilePicker({ suggestedName });
+}
+
+/**
+ * "Are these two handles the same file or folder?" A Windows shell can hold
+ * both families at once until a reconnect migrates the old records
+ * (architecture.md §17), and a native handle knows nothing about an FSA one,
+ * so a mixed pair is false without a call.
+ * @param {any} a @param {any} b @returns {Promise<boolean>}
+ */
+export async function sameEntry(a, b) {
+  if (!a || !b) return false;
+  if (isNativeHandle(a) !== isNativeHandle(b)) return false;
+  try {
+    return await a.isSameEntry(b);
+  } catch {
+    // The one place this layer swallows: isSameEntry throws for an entry that
+    // has vanished, and "not the same file" is the answer both callers want.
+    return false;
+  }
+}
+
+/** @param {FileHandle} handle @returns {Promise<{content: string, lastModified: number}>} */
+export async function readFile(handle) {
+  const file = await handle.getFile();
+  return { content: await file.text(), lastModified: file.lastModified };
+}
+
+/**
+ * The same file as bytes. `.age` files exist in two standard encodings, and
+ * the binary one is not text: decoding it as UTF-8 first would mangle it
+ * beyond repair, so the caller that may meet one reads it here instead
+ * (model/docs.js, architecture.md §13.4).
+ * @param {FileHandle} handle @returns {Promise<{bytes: Uint8Array, lastModified: number}>}
+ */
+export async function readFileBytes(handle) {
+  const file = await handle.getFile();
+  return { bytes: new Uint8Array(await file.arrayBuffer()), lastModified: file.lastModified };
+}
+
+/** @param {FileHandle} handle @param {string} content */
+export async function writeFile(handle, content) {
+  const writable = await handle.createWritable();
+  await writable.write(content);
+  // The file on disk only changes on close(); an unclosed writable is a lost
+  // write, so this must never be fire-and-forget.
+  await writable.close();
+}
+
+/** @param {FileHandle} handle @returns {Promise<number>} Epoch ms of the file on disk. */
+export async function lastModified(handle) {
+  return (await handle.getFile()).lastModified;
+}
+
+/**
+ * Permission without prompting. Used to mark rows that need a reconnect.
+ * @param {FileHandle} handle @param {'read'|'readwrite'} [mode]
+ * @returns {Promise<'granted'|'denied'|'prompt'>}
+ */
+export async function permissionState(handle, mode = "readwrite") {
+  // OPFS handles (and any future browser without the permission extension)
+  // expose no queryPermission. They need no grant, so they count as granted.
+  if (typeof handle.queryPermission !== "function") return "granted";
+  return handle.queryPermission({ mode });
+}
+
+/**
+ * Permission, prompting if needed. requestPermission only resolves to
+ * "granted" inside a user gesture, so callers outside one must treat false as
+ * "ask the user to click something", not as a hard denial.
+ * @param {FileHandle} handle @param {'read'|'readwrite'} [mode]
+ * @returns {Promise<boolean>}
+ */
+export async function ensurePermission(handle, mode = "readwrite") {
+  if ((await permissionState(handle, mode)) === "granted") return true;
+  if (typeof handle.requestPermission !== "function") return false;
+  return (await handle.requestPermission({ mode })) === "granted";
+}

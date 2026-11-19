@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#343a46"/>
+      <stop offset="1" stop-color="#22262e"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.03"/>
+    </linearGradient>
+    <filter id="glow" x="-100%" y="-50%" width="300%" height="200%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+  </defs>
+  <!-- The tile: the rounded square every platform's icon grid expects.
+       build.sh swaps it for a full-bleed square in the maskable PWA icon and
+       drops the rim there, so keep both ids. -->
+  <rect id="tile" x="24" y="24" width="464" height="464" rx="104" fill="url(#bg)"/>
+  <rect id="rim" x="26" y="26" width="460" height="460" rx="102" fill="none" stroke="url(#rim)" stroke-width="4"/>
+  <!-- The glyph: the caret, the one thing every editor has, alone and lit. -->
+  <g id="glyph">
+    <rect x="226" y="122" width="60" height="268" rx="24" fill="#f7ad62" opacity="0.55" filter="url(#glow)"/>
+    <rect x="232" y="128" width="48" height="256" rx="20" fill="#f7ad62"/>
+  </g>
+</svg>

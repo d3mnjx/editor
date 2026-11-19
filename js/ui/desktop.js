@@ -1,0 +1,203 @@
+// @ts-check
+// The desktop shell (src-tauri/) around the deployed page. The shell sets
+// window.vrttiDesktop before any page script and delivers its menu chords as
+// "vrtti:command" DOM events, so this module is the page's whole knowledge of
+// the shell and nothing here imports Tauri (desktop-wrapper-goose-patterns.md
+// §3: the page depends on a small contract, never on the transport).
+
+import { run } from "../commands/registry.js";
+import { isDesktop } from "../model/capabilities.js";
+import { on } from "../model/channel.js";
+import { MAIN_WORKSPACE } from "../storage/idb.js";
+import { BUILD } from "../version.js";
+
+// The keydown fallback for the chords the native menu carries
+// (src-tauri/src/lib.rs, CHORDS). Physical key codes, like ui/shortcuts.js.
+// On Windows this fallback is the path that works: the menu accelerator does
+// not fire while the webview has focus (architecture.md §15, spike log).
+const CHORDS = {
+  KeyN: "buffer.new",
+  KeyS: "buffer.save",
+  KeyW: "buffer.close",
+};
+const SHIFT_CHORDS = {
+  KeyN: "workspace.new",
+  KeyW: "workspace.close",
+};
+
+/**
+ * The shell's IPC. src-tauri/capabilities/default.json lists what the page
+ * may call: the window commands (§14.4), the disk backend (§17) and the word
+ * wrap mark (reportWordWrap below).
+ * @param {string} command @param {object} args
+ */
+function invoke(command, args) {
+  const core = /** @type {any} */ (window).__TAURI__?.core;
+  if (!core) return Promise.reject(new Error("no shell IPC"));
+  return core.invoke(command, args);
+}
+
+// A chord can reach the page twice on some platforms: once as the native
+// menu accelerator and once as the raw keydown, a few milliseconds apart.
+// The first delivery runs the command, a repeat inside this window is dropped.
+const DUPLICATE_MS = 50;
+
+/**
+ * Open the window for a workspace (architecture.md §14.2). In a browser it
+ * is a named window.open, which must run inside the user's gesture; the
+ * shell opens a native window instead (unit 14.4).
+ * @param {string} id
+ */
+export function openWorkspaceWindow(id) {
+  if (isDesktop) {
+    invoke("open_workspace", { id }).catch((err) =>
+      console.log("[vrtti desktop] open window failed", err)
+    );
+    return;
+  }
+  const url = new URL(location.href);
+  url.search = "?ws=" + encodeURIComponent(id);
+  window.open(url.toString(), "vrtti-ws-" + id);
+}
+
+/**
+ * @param {{workspaces: ReturnType<typeof import("../model/workspace.js").createWorkspaces>}} deps
+ */
+/**
+ * The native window title. A browser tab follows document.title on its own;
+ * the shell's window does not, so the page sets it through the core window
+ * API (capability: core:window:allow-set-title).
+ * @param {string} text
+ */
+export function setWindowTitle(text) {
+  if (!isDesktop) return;
+  const tauri = /** @type {any} */ (window).__TAURI__;
+  const current = tauri?.window?.getCurrentWindow?.();
+  if (!current) return;
+  Promise.resolve(current.setTitle(text)).catch((err) =>
+    console.log("[vrtti desktop] title failed", err)
+  );
+}
+
+/**
+ * The shell's View menu shows word wrap as a check mark. The page owns the
+ * setting (ui/wordwrap.js) and reports it here at boot and after every
+ * change, so the mark follows the page and never guesses
+ * (capability: allow-set-word-wrap).
+ * @param {boolean} on
+ */
+export function reportWordWrap(on) {
+  if (!isDesktop) return;
+  invoke("set_word_wrap", { on }).catch((err) =>
+    console.log("[vrtti desktop] word wrap mark failed", err)
+  );
+}
+
+/**
+ * Close a workspace's window through the shell (§14.4). A browser can close
+ * only a tab it opened itself.
+ * @param {string} id
+ */
+export function closeWorkspaceWindow(id) {
+  if (!isDesktop) {
+    window.close();
+    return;
+  }
+  invoke("close_workspace", { id }).catch((err) =>
+    console.log("[vrtti desktop] close window failed", err)
+  );
+}
+
+/**
+ * @param {{workspaces: ReturnType<typeof import("../model/workspace.js").createWorkspaces>,
+ *          folders: ReturnType<typeof import("../model/folders.js").createFolderStore>,
+ *          isBlankBuffer: (id: string) => boolean}} deps
+ *   isBlankBuffer says whether a tab holds nothing worth a window: a scratch
+ *   buffer with no text, or a buffer that no longer exists.
+ */
+export function mountDesktop({ workspaces, folders, isBlankBuffer }) {
+  if (!isDesktop) return;
+
+  /** @type {Map<string, number>} */
+  const lastRun = new Map();
+
+  /** @param {string} id @param {string} source @param {any} [arg] */
+  function dispatch(id, source, arg) {
+    const now = performance.now();
+    // Only a bare chord can be a repeat. A command with an argument is a
+    // request: three files dropped at once are three disk.open commands in
+    // the same millisecond, and two dissolves can land together too.
+    const duplicate = arg === undefined && now - (lastRun.get(id) ?? -Infinity) < DUPLICATE_MS;
+    // Spike step 2 and 3 (desktop-wrapper-tauri-vs-wails.md §8): the console
+    // shows which path delivered each chord on each platform.
+    console.log(`[vrtti desktop] ${id} via ${source}${duplicate ? " (duplicate, dropped)" : ""}`);
+    if (duplicate) return;
+    lastRun.set(id, now);
+    run(id, arg);
+  }
+
+  // Menu chords, and the shell's own requests: a closing window's
+  // workspace.dissolve arrives here with the workspace id as `arg`, and a
+  // dropped or passed file's disk.open with its root (architecture.md §24).
+  window.addEventListener("vrtti:command", (event) => {
+    const detail = /** @type {CustomEvent<{ id: string, arg?: any }>} */ (event).detail;
+    if (detail?.id) dispatch(detail.id, "menu", detail.arg);
+  });
+
+  // The ready handshake (desktop-wrapper-goose-patterns.md §1): the shell
+  // queues a chord or a dissolve for this window until this call, so a key
+  // pressed during the boot is not lost. The build id lets Help > About in
+  // the shell say which page it shows.
+  invoke("page_ready", { build: BUILD.commit }).catch((err) =>
+    console.log("[vrtti desktop] ready failed", err)
+  );
+
+  window.addEventListener("keydown", (event) => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    const table = event.shiftKey ? SHIFT_CHORDS : CHORDS;
+    const id = table[/** @type {keyof typeof table} */ (event.code)];
+    if (!id) return;
+    // Also stops the webview's own handling, such as WebView2's "save page as"
+    // dialog on Ctrl+S.
+    event.preventDefault();
+    dispatch(id, "keydown");
+  });
+
+  // A buffer open in this window was asked for elsewhere: this window comes
+  // forward (§14.2 posts focus, §14.4 answers it natively).
+  on("focus", ({ ws }) => {
+    if (ws !== workspaces.id) return;
+    invoke("focus_workspace", { id: ws }).catch((err) =>
+      console.log("[vrtti desktop] focus failed", err)
+    );
+  });
+
+  // Launch: the shell opens only main, and main asks for a window for every
+  // workspace whose lock nobody holds (§14.4). A reload of main while the
+  // others are up finds their locks held and asks for nothing. A workspace
+  // with no folders and nothing but blank scratch buffers is what a window
+  // that never booted, or died mid-close, leaves behind; it has nothing to
+  // bring back and is dissolved instead, or every launch would add a
+  // blank window.
+  //
+  // First, a folder main lists moves to a workspace of its own (§14.5):
+  // main never lists a folder in the shell, and a record from before that
+  // rule is the one way one gets here. The loop then opens its window like
+  // any other's.
+  if (workspaces.id === MAIN_WORKSPACE) {
+    reopenAtLaunch().catch((err) => console.log("[vrtti desktop] reopen failed", err));
+  }
+
+  async function reopenAtLaunch() {
+    await folders.moveFoldersOut();
+    const live = await workspaces.liveSet();
+    for (const record of workspaces.all()) {
+      if (record.id === MAIN_WORKSPACE || live.has(record.id)) continue;
+      if (record.folderIds.length === 0 && record.tabs.every(isBlankBuffer)) {
+        void workspaces.dissolve(record.id);
+        continue;
+      }
+      openWorkspaceWindow(record.id);
+    }
+  }
+}

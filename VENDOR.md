@@ -1,0 +1,378 @@
+# Vendored dependencies
+
+Vendored on **2026-09-01**. Route B from `editor-core-research.md` section 1:
+prebuilt ESM files fetched with `curl` from `cdn.jsdelivr.net`, one file per
+package, resolved by the import map in `index.html`.
+
+Versions were pinned from `https://registry.npmjs.org/<package>/latest` on the
+date above. Files are byte-identical to the published packages; nothing is
+minified, rewritten or bundled.
+
+Re-fetch with `python3 tools/vendor.py`. Verify with `python3 tools/check_imports.py`.
+
+## What was NOT used (traps from the research)
+
+- No `cdn.jsdelivr.net/npm/.../+esm` URLs. They duplicate packages at several
+  versions and break `instanceof` across package boundaries.
+- No `esm.sh?bundle=all`. It exports only `EditorView`/`basicSetup` and drops
+  `Decoration`, `WidgetType` and `EditorState`.
+- The `codemirror` meta package is not vendored at all. The extension list in
+  `js/editor.js` replaces `basicSetup`.
+
+## Pinned packages
+
+Each file is saved as `vendor/<package>/index.js`, whatever its upstream name.
+
+| Package | Version | Upstream ESM entry | Bytes |
+|---|---|---|---|
+| `@codemirror/autocomplete` | 6.20.3 | `dist/index.js` | 90,042 |
+| `@codemirror/commands` | 6.11.0 | `dist/index.js` | 84,656 |
+| `@codemirror/lang-css` | 6.3.1 | `dist/index.js` | 15,969 |
+| `@codemirror/lang-html` | 6.4.12 | `dist/index.js` | 26,142 |
+| `@codemirror/lang-javascript` | 6.2.5 | `dist/index.js` | 20,788 |
+| `@codemirror/lang-json` | 6.0.2 | `dist/index.js` | 1,876 |
+| `@codemirror/lang-markdown` | 6.5.2 | `dist/index.js` | 21,741 |
+| `@codemirror/legacy-modes` | 6.5.4 | `mode/clike.js` (kept at that path, see below) | 38,933 |
+| `@codemirror/language` | 6.12.4 | `dist/index.js` | 102,129 |
+| `@codemirror/lint` | 6.9.7 | `dist/index.js` | 36,579 |
+| `@codemirror/search` | 6.7.2 | `dist/index.js` | 48,927 |
+| `@codemirror/state` | 6.7.2 | `dist/index.js` | 147,001 |
+| `@codemirror/view` | 6.43.10 | `dist/index.js` | 491,099 |
+| `@lezer/common` | 1.5.2 | `dist/index.js` | 83,319 |
+| `@lezer/css` | 1.3.6 | `dist/index.js` | 19,697 |
+| `@lezer/highlight` | 1.2.3 | `dist/index.js` | 29,915 |
+| `@lezer/html` | 1.3.13 | `dist/index.js` | 20,875 |
+| `@lezer/javascript` | 1.5.4 | `dist/index.js` | 80,756 |
+| `@lezer/json` | 1.0.3 | `dist/index.js` | 1,981 |
+| `@lezer/lr` | 1.4.10 | `dist/index.js` | 71,678 |
+| `@lezer/markdown` | 1.7.2 | `dist/index.js` | 86,937 |
+| `@marijn/find-cluster-break` | 1.0.4 | `src/index.js` | 4,270 |
+| `crelt` | 1.0.7 | `index.js` | 951 |
+| `style-mod` | 4.1.3 | `src/style-mod.js` | 6,935 |
+| `w3c-keyname` | 2.2.8 | `index.js` | 2,630 |
+
+**25 packages, 25 files, 1,535,826 raw bytes (1.46 MiB).**
+
+`@codemirror/lint` was added on **2026-09-01** for the Harper spellcheck
+(architecture.md §11), after the other 21. It was fetched by hand, at the same
+URL shape `tools/vendor.py` uses, and not by re-running the script: a full run
+re-pins every CodeMirror package to today's latest, which is a separate
+decision from adding one package. Its dependencies (`@codemirror/state`,
+`@codemirror/view` ≥ 6.42.0, `crelt`) were already in the tree and satisfy its
+ranges, so the closure did not grow.
+
+`@codemirror/lang-json` was added on **2026-09-02** for language
+auto-detection (architecture.md §9), by hand for the same reason. It is the
+one language pack the editor needed and did not already own: markdown,
+javascript, html and css were all in the tree. It pulls `@lezer/json`, which
+is the only new transitive package; `@lezer/json`'s own dependencies
+(`@lezer/common`, `@lezer/highlight`, `@lezer/lr`) were already vendored. Both
+files are tiny, because the grammar tables are the bulk of a language pack and
+JSON's grammar is small.
+
+`@codemirror/legacy-modes` was added on **2026-09-25** for C# (a pasted C#
+method stayed Markdown, user report). CodeMirror has no Lezer grammar for C#;
+the legacy package carries the CodeMirror 5 stream tokenizers, and
+`mode/clike.js` holds the C-family ones (`c`, `cpp`, `java`, `csharp`, `kotlin`,
+`dart`, ...). The package has no root entry, only `./mode/*` exports, so the
+one file is saved at its upstream path, `vendor/@codemirror/legacy-modes/mode/clike.js`,
+and the import map entry is the full specifier
+`@codemirror/legacy-modes/mode/clike`. The file imports nothing; its one
+dependency, `@codemirror/language` (`StreamLanguage`), was already in the tree.
+Fetched by hand at the same URL shape `tools/vendor.py` uses, for the reason
+above, and because the script fetches one root entry per package and would not
+find this one.
+
+## Twemoji SVG assets
+
+Vendored on **2026-09-01** for the editor's color emoji (architecture.md §10).
+
+| Item | Value |
+|---|---|
+| Project | [jdecked/twemoji](https://github.com/jdecked/twemoji) (the maintained fork of Twitter's Twemoji) |
+| Version | **v17.0.3** |
+| Source | `https://github.com/jdecked/twemoji/archive/refs/tags/v17.0.3.tar.gz` |
+| Tarball SHA-256 | `a0855654b633045ae2337537e77f1bb4361162f7fcd910e613eaab1d6d9c5fca` |
+| Taken from | `assets/svg/` only |
+| Placed at | `vendor/twemoji/svg/<codepoints>.svg` |
+| Files | **4,009 SVG, 10,121,593 bytes (9.65 MiB)** |
+
+Files are byte-identical to the release; nothing was minified or rewritten.
+Only the SVG directory was extracted. The PNG set, the JS library and the
+repository tooling are not vendored.
+
+### Attribution (required by CC-BY 4.0)
+
+> Graphics from [Twemoji](https://github.com/jdecked/twemoji).
+> Copyright 2022–present Jason Sofonia & Justine De Caires.
+> Copyright 2014–2021 Twitter, Inc and other contributors.
+> Licensed under [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+The graphics are CC-BY 4.0; the upstream code is MIT. No graphic was modified.
+
+### Why the GitHub tarball and not npm
+
+- `@twemoji/api` is the fork's own npm package, but it ships the JS library
+  only (11 files). It has no assets.
+- `@twemoji/svg` on npm carries SVGs, but it is a third-party re-publish
+  (`boywithkeyboard/twemoji_svg`), it stops at 15.0.0, and its files are
+  re-optimized. The fork's own tagged release is the source of truth.
+
+### Not precached
+
+`tools/gen_sw.py` skips `vendor/twemoji/`, so the precache list stays at ~40
+URLs. `sw.js` caches each SVG on first use, in a cache named `vrtti-emoji`
+that survives the activate cleanup. See architecture.md §10.
+
+## Harper (spellcheck engine)
+
+Vendored on **2026-09-01** for offline English spellcheck (architecture.md §11).
+
+| Item | Value |
+|---|---|
+| Package | [`harper.js`](https://writewithharper.com) by Automattic |
+| Version | **2.7.0** |
+| License | Apache-2.0 |
+| Source | `https://registry.npmjs.org/harper.js/-/harper.js-2.7.0.tgz` |
+| Tarball SHA-256 | `834b36c30037c785dcc62cd7071fa5b7d454a38ccc0dbb1b20350cc7cd153e4f` |
+| Taken from | `dist/` only, three files |
+| Placed at | `vendor/harper/` |
+
+| File | Upstream path | Bytes |
+|---|---|---|
+| `index.js` | `dist/index.js` | 152,404 |
+| `BinaryModule-Aj1vLnwf.js` | `dist/BinaryModule-Aj1vLnwf.js` | 97,063 |
+| `harper_wasm_slim_bg.wasm` | `dist/harper_wasm_slim_bg.wasm` | 15,634,488 |
+
+**3 files, 15,883,955 bytes (15.15 MiB).** Byte-identical to the published
+package; nothing was minified, renamed or rewritten.
+
+- The hashed name `BinaryModule-Aj1vLnwf.js` is kept as published. `index.js`
+  imports it by that exact name, and renaming it would mean editing a vendored
+  file, which no other package here needs.
+- `harper.js` is not vendored through `tools/vendor.py`: the entry it would
+  pick, `dist/index.js`, is only one third of what the package needs.
+
+### Why `harper.js` and not `harper-wasm`
+
+`harper.js` 2.7.0 builds fine without a bundler. Its `dist/binary.js` resolves
+the binary with `new URL("…", import.meta.url)`, and the public
+`createBinaryModuleFromUrl(url, flavor)` takes any URL, so the vendored path
+goes in explicitly and native ES modules are enough. `harper-wasm`, the
+lower-level wasm-bindgen package, is still at 0.1.1 from the pre-Automattic
+repository and is years behind the engine `harper.js` ships.
+
+### Why the `slim` binary
+
+The package ships two binaries, `harper_wasm_bg.wasm` (15.85 MB) and
+`harper_wasm_slim_bg.wasm` (15.63 MB). Slim is Harper built without the typst
+parser and the thesaurus; the JavaScript API is identical.
+
+The deciding reason is the loader, not the 214 KB. For the `full` flavor,
+`loadBinaryUncached` first initializes the slim glue **with the slim binary**
+and only then loads the full one, inside a `try` that swallows the failure. A
+`full` setup therefore either downloads and instantiates 31 MB, or relies on
+the slim URL returning 404. The `slim` flavor loads exactly one binary once.
+
+### Precached, unlike Twemoji
+
+`tools/gen_sw.py` excludes `vendor/twemoji/` only, so the wasm is in
+`sw-precache.js` and spellcheck works offline (verified: with the service
+worker active and the network cut, linting still runs). This is the deliberate
+opposite of the Twemoji decision: one 15 MB file the feature cannot work
+without, against 4,000 small files most users never need.
+
+## Hunspell and the Czech dictionary (Czech spellcheck)
+
+Vendored on **2026-09-08** for offline Czech spellcheck (architecture.md §11).
+Two packages, both fetched from the npm registry as tarballs and copied by
+hand, for the same reason as `harper.js`: `tools/vendor.py` takes one entry
+file per package and these need a module tree plus raw data files.
+
+| Item | Value |
+|---|---|
+| Package | [`hunspell-wasm`](https://www.npmjs.com/package/hunspell-wasm) (Hunspell compiled to WebAssembly, with a small TypeScript wrapper) |
+| Version | **0.3.0** |
+| License | Hunspell tri-license LGPL-2.1 / GPL-2.0 / MPL-1.1; used under the MPL, `COPYING.MPL` is kept |
+| Source | `https://registry.npmjs.org/hunspell-wasm/-/hunspell-wasm-0.3.0.tgz` |
+| Tarball SHA-256 | `796ed8e22cecac1e1563e370f19f1c51d011f9b792a219790a56c34da1d1c74a` |
+| Taken from | `dist/` (the four runtime modules, no `.d.ts`, no maps) and `wasm/` |
+| Placed at | `vendor/hunspell/`, upstream layout kept |
+
+| File | Upstream path | Bytes |
+|---|---|---|
+| `dist/Hunspell.js` | `dist/Hunspell.js` | 10,876 |
+| `dist/Utf8.js` | `dist/Utf8.js` | 752 |
+| `dist/Utilities.js` | `dist/Utilities.js` | 601 |
+| `dist/WasmMemoryManager.js` | `dist/WasmMemoryManager.js` | 12,898 |
+| `wasm/hunspell.js` | `wasm/hunspell.js` | 67,406 |
+| `wasm/hunspell.wasm` | `wasm/hunspell.wasm` | 811,567 |
+| `COPYING.MPL` | `COPYING.MPL` | 25,755 |
+
+| Item | Value |
+|---|---|
+| Package | [`dictionary-cs`](https://www.npmjs.com/package/dictionary-cs) (wooorm/dictionaries, from translatoblog.cz, revision of 2021-02-20) |
+| Version | **4.0.0** |
+| License | GPL-2.0 (the dictionary data; it links to nothing and stays a separate work) |
+| Source | `https://registry.npmjs.org/dictionary-cs/-/dictionary-cs-4.0.0.tgz` |
+| Tarball SHA-256 | `119518d93ea373c4976818dc5366e15c28590f85a635f3d1b5a1bc962461e97a` |
+| Taken from | the two data files and the license; not `index.js` (a Node `fs` reader) |
+| Placed at | `vendor/dictionary-cs/` |
+
+| File | Upstream path | Bytes |
+|---|---|---|
+| `index.aff` | `index.aff` | 112,714 |
+| `index.dic` | `index.dic` | 3,648,134 |
+| `license` | `license` | 48,038 |
+
+**10 files, 4,738,741 bytes (4.52 MiB).** Byte-identical to the published
+packages; nothing was minified, renamed or rewritten.
+
+- `hunspell-wasm` keeps its `dist/` and `wasm/` split because `dist/Hunspell.js`
+  imports `../wasm/hunspell.js` by that relative path, and the Emscripten glue
+  finds `hunspell.wasm` next to itself through `import.meta.url`. The import
+  map entry `hunspell-wasm` points at `dist/Hunspell.js`; only the page
+  imports it, no worker, so an import map entry is enough (compare age).
+- The dictionary is fetched by `js/editor/hunspell.js` with two plain
+  `fetch()` calls resolved against the module URL, and handed to Hunspell as
+  strings. Measured in Node: the load costs about 120 ms, a spelling test is
+  microseconds, a suggestion 5 to 55 ms.
+- Precached, like Harper: spellcheck must work offline (architecture.md §11).
+  The 3.6 MB `.dic` is the cost; gzip brings it to 0.9 MB on the wire.
+
+### Why `hunspell-wasm` and not `nspell` or `hunspell-asm`
+
+`nspell` is a pure JavaScript Hunspell that does not implement every affix
+feature, and Czech is affix-heavy (260,000 stems, 3.6 MB of them). Real
+Hunspell in wasm gives the same verdicts as LibreOffice. `hunspell-asm` is the
+older Emscripten port (2022), four times the size, and its ESM build still
+assumes a bundler for the wasm path. `hunspell-wasm` 0.3.0 is native ESM, 0.9
+MB, and loads on the main thread with no configuration.
+
+## age encryption (typage and the noble/scure family)
+
+Vendored on **2026-09-02** for per-document encryption (architecture.md §5 and
+§13.1). Fetched from `registry.npmjs.org` tarballs by
+`python3 tools/vendor_age.py`, which is the reproducible recipe and a port of
+`crypto-proto/vendor.sh`.
+
+| Package | Version | License | Placed at | Files | Bytes |
+|---|---|---|---|---|---|
+| `age-encryption` (typage) | **0.3.1** | BSD-3-Clause | `vendor/age-encryption/` | 9 | 56,826 |
+| `@noble/hashes` | **2.0.1** | MIT | `vendor/@noble/hashes/` | 19 | 167,689 |
+| `@noble/curves` | **2.0.1** | MIT | `vendor/@noble/curves/` | 21 | 340,663 |
+| `@noble/ciphers` | **2.4.0** | MIT | `vendor/@noble/ciphers/` | 10 | 208,660 |
+| `@noble/post-quantum` | **0.5.4** | MIT | `vendor/@noble/post-quantum/` | 7 | 92,586 |
+| `@scure/base` | **2.4.0** | MIT | `vendor/@scure/base/` | 1 | 49,993 |
+
+**67 JS files, 916,417 bytes (895 KiB).** Each package keeps its `LICENSE`.
+Every `*.d.ts`, `*.map` and `src/` directory is dropped. typage's `dist/` is
+flattened one level, so its entry is `vendor/age-encryption/index.js`.
+
+### The tree is rewritten to relative imports, and gets no import map entry
+
+This is the one vendored tree that is **not** byte-identical to the published
+packages. `tools/vendor_age.py` rewrites every bare specifier in it
+(`@noble/hashes/sha2.js`, `@scure/base`, …) to a relative path, 60 of them
+across 22 files. Nothing else is touched: quote style, spacing, and every
+comment survive, and `diff -r` against `crypto-proto/vendor/` shows import
+lines only.
+
+The reason is the unlock step. scrypt in `@noble/hashes` is synchronous and
+typage calls it synchronously, so unwrapping the device identity blocks its
+thread for ~650 ms (`crypto-proto/REPORT.md` Q4). That work therefore runs in a
+dedicated worker (`js/crypto/unlock.worker.js`), and **a dedicated worker
+ignores the page's import map**. A bare specifier that resolves in the window
+would fail in the worker. Rewriting at vendor time makes one tree that loads
+identically in both, so `index.html` deliberately has **no** import map entry
+for these six packages. Do not add one.
+
+`vendor_age.py` asserts the rewrite: after it runs, no bare specifier for the
+six packages may remain anywhere under the six directories, and it scans for
+dynamic `import()` of bare specifiers too (there are none today).
+
+### Versions are pinned, and "latest" is wrong here
+
+A flat vendor tree cannot nest a second copy of a package the way npm does.
+`@noble/post-quantum` 0.5.4 wants `@noble/curves` and `@noble/hashes` at
+`~2.0.0`; typage wants `^2.0.1`. **2.0.1 is the one version that satisfies
+both**, so hashes and curves are pinned there and not at the newer 2.4.0.
+Taking latest breaks nothing at load time and breaks ML-KEM silently at
+runtime. The reason is repeated in the script's own header.
+
+### Comments hold example imports, and both tools skip them
+
+The noble packages put runnable `@example` blocks in their JSDoc, at column 0.
+`@noble/hashes/index.js` "imports" nine sibling modules that way, and
+`@noble/curves/index.js` "imports" `abstract/utils.js`, a file the package does
+not publish. `tools/jsscan.py` masks comments for both `vendor_age.py` and
+`check_imports.py`, so those examples are neither rewritten nor counted.
+
+### Not from jsdelivr
+
+`https://cdn.jsdelivr.net/npm/age-encryption@0.3.1/+esm` returns a working
+22 KB bundle whose imports are absolute CDN paths. It fetches from the CDN at
+runtime, which breaks the offline requirement. Registry tarballs are smaller in
+transferred bytes and genuinely offline.
+
+### Precached in full
+
+`tools/gen_sw.py` excludes `vendor/twemoji/` only, so all 67 files are in
+`sw-precache.js`. Only 38 of them load in practice; the other 29 cost 419 KB of
+disk and zero requests, and a partial list would break after an upgrade.
+
+## Notes on the closure
+
+- Start set: `@codemirror/state`, `@codemirror/view`, `@codemirror/language`,
+  `@codemirror/commands`, `@codemirror/search`, `@codemirror/lang-markdown`,
+  `@codemirror/lang-javascript`.
+- `@codemirror/autocomplete`, `@codemirror/lang-html`, `@codemirror/lang-css`,
+  `@lezer/*`, `crelt`, `style-mod` and `w3c-keyname` arrive transitively.
+- `@codemirror/lint`, `@codemirror/lang-json` and `@codemirror/legacy-modes`
+  were added later, by hand, and are not in `START` in `tools/vendor.py`. A
+  re-run of the script would drop them; add the first two to `START` first,
+  and fetch `legacy-modes` again by hand (the script cannot, see above).
+- `@marijn/find-cluster-break` is a dependency of `@codemirror/state` 6.7.2 that
+  the plan's expected list did not name. It is required; the graph does not
+  close without it.
+- Four packages do not publish `dist/index.js`. Their real ESM entry (from the
+  `exports`/`module` field of their `package.json`) is in the table above:
+  `crelt` and `w3c-keyname` ship a root `index.js`, `style-mod` ships
+  `src/style-mod.js`, `@marijn/find-cluster-break` ships `src/index.js`.
+- No CodeMirror or Harper file contains a `sourceMappingURL` comment, so the
+  browser makes no follow-up requests for missing maps. 47 files in the age tree
+  do carry one, as published, and the `.map` files themselves are not vendored.
+  A browser only asks for a source map while devtools is open with source maps
+  enabled, so this costs a 404 in that one case and nothing at runtime.
+- `tools/versions.json` is written by two scripts now, `vendor.py` for the
+  CodeMirror closure and `vendor_age.py` for the age family. Both merge into the
+  existing file. `vendor.py` used to overwrite it, which would have dropped the
+  age pins without a word.
+- `js/editor/spellcheck.js` reaches Harper through a dynamic `import("harper.js")`,
+  so the engine is fetched on the first lint and not at startup.
+  `tools/check_imports.py` counts that specifier as used but does not resolve
+  it, because vendored bundles carry Node-only branches such as `import("fs")`.
+  The import map entry it points at is still checked for a missing file.
+
+## Deviations from `poc-plan.md`
+
+Recorded here because this is the only durable document in the PoC.
+
+1. **Four packages do not publish `dist/index.js`.** Their declared ESM entry was
+   downloaded instead (see the table). Step 1.2 of the plan allows this.
+2. **`@marijn/find-cluster-break` joined the closure.** It is a hard dependency of
+   `@codemirror/state` 6.7.2 and the plan's expected package list predates it.
+3. **`tools/vendor.py` exists.** The plan names only `tools/check_imports.py`.
+   The fetcher drives `curl` and makes the vendoring reproducible.
+4. **Fenced code resolves js, jsx, ts, tsx, html, css and json**, not js alone.
+   `@codemirror/lang-html` and `@codemirror/lang-css` arrive transitively with
+   `@codemirror/lang-markdown`, so those fences cost zero bytes. `json` was
+   added with `@codemirror/lang-json` (see above), which the whole-document
+   mode needed anyway. The table lives in `js/editor/lang.js`.
+5. **`.cm-cursorLayer { animation: none }`.** Sublime's `caret_style` default is
+   `"solid"`, so the caret must not blink. The plan's theme list omits this.
+6. **Bracket match and search panel colors.** Mariana sets
+   `brackets_options: underline`, so matching brackets are underlined instead of
+   boxed. The search panel is painted in the Default Dark UI colors, because the
+   `searchKeymap` opens a panel that would otherwise render light.
+7. **`window.vrtti` test hook** in `js/main.js`, for the Playwright checks only.

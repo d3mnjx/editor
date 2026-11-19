@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vrtti</title>
+<meta name="theme-color" content="#2E3238">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="app.css">
+
+<!-- Replays the stored text sizes before the first paint. js/ui/textsize.js
+     owns these two keys and is the only writer; this only reads them back. It
+     has to be here, inline and in the head: a module script is deferred, so
+     the app would paint once at the default size and then visibly jump.
+     The bounds repeat that module's ranges as a guard, not as the rule: a
+     value rejected here keeps the CSS default, and the module settles it a
+     moment later. Without the guard a junk value reaches --ui-scale as NaN,
+     which voids every calc() in the chrome for that first frame. -->
+<script>
+  try {
+    const root = document.documentElement.style;
+    const ui = Number(localStorage.getItem("vrtti.uiScale"));
+    const editor = Number(localStorage.getItem("vrtti.editorFontSize"));
+    if (ui >= 70 && ui <= 200) root.setProperty("--ui-scale", String(ui / 100));
+    if (editor >= 9 && editor <= 32) root.setProperty("--editor-font-size", editor + "px");
+  } catch (err) {
+    // Private mode can throw on localStorage. The CSS defaults then stand.
+  }
+</script>
+
+<!-- Phone mode (architecture.md §9): the class `phone` on <html> switches the
+     drawer for the full-screen note list and the round "+" for the thumb
+     button. Every rule of that layout in app.css starts with `html.phone`, so
+     without the class nothing changes anywhere.
+     Inline and in the head for the reason above: the class must be there
+     before the first paint, or a phone would show the drawer layout for a
+     frame. This script is the only writer of the class. It also follows the
+     query, so a phone turned on its side moves between the two layouts with
+     no code involved; modules read the class at the moment they need it
+     (phoneMode in js/ui/shell.js) and never keep a copy.
+     A media query alone could not do this: CSS cannot see the desktop shell,
+     which must never get this layout, even on a small touch screen.
+     `pointer: coarse` keeps a narrow browser window on a PC on the drawer. -->
+<script>
+  {
+    const query = matchMedia("(max-width: 700px) and (pointer: coarse)");
+    const apply = () => {
+      document.documentElement.classList.toggle("phone", !window.vrttiDesktop && query.matches);
+    };
+    query.addEventListener("change", apply);
+    apply();
+  }
+  // The row length of the note list, replayed before the first paint like the
+  // text sizes. js/ui/sidebar.js owns the key and is the only writer.
+  try {
+    if (localStorage.getItem("vrtti.listRows") === "long") {
+      document.documentElement.classList.add("rows-long");
+    }
+  } catch (err) {
+    // Private mode can throw on localStorage. The short rows then stand.
+  }
+</script>
+
+<!-- Every bare specifier maps to one vendored file. One entry per package, no
+     versions in the specifier: that is what keeps a single @codemirror/state
+     instance alive and keeps `instanceof` checks working across packages. -->
+<script type="importmap">
+{
+  "imports": {
+    "@codemirror/state": "./vendor/@codemirror/state/index.js",
+    "@codemirror/view": "./vendor/@codemirror/view/index.js",
+    "@codemirror/language": "./vendor/@codemirror/language/index.js",
+    "@codemirror/commands": "./vendor/@codemirror/commands/index.js",
+    "@codemirror/search": "./vendor/@codemirror/search/index.js",
+    "@codemirror/autocomplete": "./vendor/@codemirror/autocomplete/index.js",
+    "@codemirror/lint": "./vendor/@codemirror/lint/index.js",
+    "@codemirror/lang-markdown": "./vendor/@codemirror/lang-markdown/index.js",
+    "@codemirror/lang-javascript": "./vendor/@codemirror/lang-javascript/index.js",
+    "@codemirror/lang-html": "./vendor/@codemirror/lang-html/index.js",
+    "@codemirror/lang-css": "./vendor/@codemirror/lang-css/index.js",
+    "@codemirror/lang-json": "./vendor/@codemirror/lang-json/index.js",
+    "@codemirror/legacy-modes/mode/clike": "./vendor/@codemirror/legacy-modes/mode/clike.js",
+    "@lezer/common": "./vendor/@lezer/common/index.js",
+    "@lezer/highlight": "./vendor/@lezer/highlight/index.js",
+    "@lezer/lr": "./vendor/@lezer/lr/index.js",
+    "@lezer/markdown": "./vendor/@lezer/markdown/index.js",
+    "@lezer/javascript": "./vendor/@lezer/javascript/index.js",
+    "@lezer/html": "./vendor/@lezer/html/index.js",
+    "@lezer/css": "./vendor/@lezer/css/index.js",
+    "@lezer/json": "./vendor/@lezer/json/index.js",
+    "@marijn/find-cluster-break": "./vendor/@marijn/find-cluster-break/index.js",
+    "crelt": "./vendor/crelt/index.js",
+    "harper.js": "./vendor/harper/index.js",
+    "hunspell-wasm": "./vendor/hunspell/dist/Hunspell.js",
+    "style-mod": "./vendor/style-mod/index.js",
+    "w3c-keyname": "./vendor/w3c-keyname/index.js"
+  }
+}
+</script>
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <!-- Four-part column: the primary action on top, one scroller in the
+           middle, Recent and settings pinned at the bottom (architecture.md
+           §9). The "+" stays outside the scroller on purpose, so neither the
+           app's main action nor the pinned parts can scroll out of reach. -->
+      <div id="sidebar-top">
+        <!-- Collapses the sidebar. The twin of this button, #sidebar-open,
+             takes over once the sidebar is gone (ui/shell.js). -->
+        <button id="sidebar-toggle" type="button" title="Hide sidebar (Alt+B)"
+                aria-controls="sidebar" aria-expanded="true">☰</button>
+        <button id="new-buffer" type="button" title="New buffer (Alt+N)">+</button>
+      </div>
+      <!-- Everything that can grow lives here. The scroll and the sidebar
+           padding belong on this div, not on #sidebar, or the pinned buttons
+           would scroll away with the lists. -->
+      <div id="sidebar-scroll">
+        <!-- Search in files (architecture.md §16), filled by ui/search.js. First
+             in the scroller, so the results replace the lists in place; the
+             class `searching` on #sidebar hides everything below while it is
+             open. Hidden here, because the sidebar opens on the lists. -->
+        <section id="search-view" hidden aria-label="Search in files">
+          <div class="search-head">
+            <h2 class="sidebar-heading">Search</h2>
+            <button id="search-close" type="button" title="Close search (Esc)">×</button>
+          </div>
+          <!-- A form, so Enter in the field and the Go button are one path
+               (architecture.md §16: typing does not search, Enter does). -->
+          <form id="search-form" class="search-form">
+            <input id="search-query" type="text" placeholder="Find in files" autocomplete="off" spellcheck="false">
+            <button id="search-case" type="button" title="Match case" aria-pressed="false">Aa</button>
+            <button id="search-go" type="submit" title="Search (Enter)">Go</button>
+          </form>
+          <div id="search-status" class="search-status" aria-live="polite"></div>
+          <ul id="search-results" class="search-results"></ul>
+        </section>
+        <!-- Disk entry points. The two disk buttons are hidden in the markup and
+             unhidden by ui/sidebar.js only where the File System Access API
+             exists: Firefox and phones must never see a button that cannot work.
+             The row itself always shows; search works without the API. -->
+        <!-- Each button is an icon plus a label. app.css folds the label away
+             when the button gets narrow, so a slim sidebar still shows all
+             four. The icons are inline so that they paint on the first frame
+             and take currentColor from the button; no sprite, no extra fetch.
+             aria-hidden: the label and the title already name the button. -->
+        <div id="open-actions">
+          <button id="search-open" type="button" title="Find in files (Ctrl+Shift+F)">
+            <svg class="action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="6.75" cy="6.75" r="4.25"/><path d="M10 10l4 4"/></svg>
+            <span class="action-label">search</span>
+          </button>
+          <button id="open-file" type="button" title="Open a file from disk" hidden>
+            <svg class="action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.75 1.75h5.5l3 3v9.5h-8.5z"/><path d="M9.25 1.75v3h3"/></svg>
+            <span class="action-label">file</span>
+          </button>
+          <button id="open-folder" type="button" title="Open a folder from disk" hidden>
+            <svg class="action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M1.75 3.75h4.5l1.5 1.5h6.5v8H1.75z"/></svg>
+            <span class="action-label">folder</span>
+          </button>
+          <button id="new-window" type="button" title="New window (Alt+Shift+N)">
+            <svg class="action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1"/><path d="M1.75 5.75h12.5"/><path d="M8 7.5v4.5M5.75 9.75h4.5"/></svg>
+            <span class="action-label">window</span>
+          </button>
+        </div>
+        <h2 class="sidebar-heading">Open</h2>
+        <ul id="open-list" class="buffer-list"></ul>
+        <!-- One section per opened folder, filled by ui/sidebar.js. Stays empty
+             where the File System Access API is missing. -->
+        <div id="folder-sections"></div>
+      </div>
+      <!-- Recent sits under the scroller, above settings, not at the end of
+           the lists (user decision, 2026-09-24): one closed heading that is
+           always in the same place. Hidden until a closed document exists;
+           expanded, the list scrolls on its own inside the block (app.css).
+           ui/sidebar.js owns both hidden attributes. -->
+      <div id="recent" hidden>
+        <h2 class="sidebar-heading" id="recent-heading"></h2>
+        <ul id="recent-list" class="buffer-list" hidden></ul>
+      </div>
+      <!-- From server (architecture.md §25): the titles of notes in a space
+           this device lists but does not store. Same shape and rules as
+           Recent above it: closed at start, nothing persists that, hidden
+           while empty. A click fetches the note. ui/sidebar.js owns both
+           hidden attributes. -->
+      <div id="fromserver" hidden>
+        <h2 class="sidebar-heading" id="fromserver-heading"></h2>
+        <ul id="fromserver-list" class="buffer-list" hidden></ul>
+      </div>
+      <button id="sidebar-settings" type="button" title="Settings">⚙ settings</button>
+    </aside>
+    <div id="resizer"></div>
+    <!-- Dims the editor behind an open drawer, and closes it on a tap. Shown
+         by app.css on narrow screens only; a docked sidebar needs no scrim. -->
+    <div id="sidebar-scrim"></div>
+    <main id="editor-host">
+      <!-- The way back when the sidebar is collapsed. Floats over the top-left
+           corner of the editor; app.css shows it only in that state. -->
+      <button id="sidebar-open" type="button" title="Show sidebar (Alt+B)"
+              aria-controls="sidebar" aria-expanded="false">☰</button>
+      <!-- New buffer in one tap on a phone, where the sidebar "+" sits behind
+           the drawer. app.css shows it under the drawer breakpoint only;
+           ui/newbutton.js hides it while the on-screen keyboard is up.
+           In phone mode (html.phone) it is the thumb button instead: a tap
+           shows the three round buttons below. The two icons are its signs
+           there, closed and open; app.css shows them in phone mode only and
+           hides the "+" by its font size. The "+" stays a bare text node and
+           the icons follow it with no space between, so the button outside
+           phone mode is laid out exactly as it was before the icons came. -->
+      <button id="new-fab" type="button" title="New buffer" aria-label="New buffer">+<svg class="thumb-icon fab-menu" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2.75 4.25h10.5M2.75 8h10.5M2.75 11.75h10.5"/></svg><svg class="thumb-icon fab-close" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+      <!-- The round buttons of phone mode (ui/thumb.js, architecture.md §9).
+           Hidden here and outside phone mode by app.css. The scrim dims the
+           screen behind them and closes them on a tap. #thumb-menu is a point,
+           not a box: it sits on the centre of the thumb button, and app.css
+           places each button on a quarter circle around it.
+           Icons, not signs like "⚙": a phone can draw those as colour emoji.
+           Inline for the reason given at #open-actions. The gear is a ring
+           with eight short, thick strokes for teeth (.thumb-icon-teeth).
+           The middle button holds two icons, and app.css shows one: the list
+           on a note, the arrow back on the note list. -->
+      <div id="thumb-scrim" hidden></div>
+      <div id="thumb-menu" hidden>
+        <button id="thumb-new" type="button" title="New note" aria-label="New note">
+          <svg class="thumb-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 3v10M3 8h10"/></svg>
+        </button>
+        <button id="thumb-list" type="button" title="Note list" aria-label="Note list">
+          <svg class="thumb-icon thumb-icon-list" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M5.75 4.25h7.5M5.75 8h7.5M5.75 11.75h7.5"/><path class="thumb-icon-dots" d="M2.75 4.25h.01M2.75 8h.01M2.75 11.75h.01"/></svg>
+          <svg class="thumb-icon thumb-icon-back" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13 8H3M7 4L3 8l4 4"/></svg>
+        </button>
+        <button id="thumb-settings" type="button" title="Settings" aria-label="Settings">
+          <svg class="thumb-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="4.25"/><circle cx="8" cy="8" r="1.5"/><path class="thumb-icon-teeth" d="M12.6 8h2M3.4 8h-2M8 12.6v2M8 3.4v-2M11.25 11.25l1.42 1.42M4.75 11.25l-1.42 1.42M4.75 4.75L3.33 3.33M11.25 4.75l1.42-1.42"/></svg>
+        </button>
+      </div>
+      <!-- Overlay over the editor, filled by ui/settings.js from its item list.
+           It sits inside #editor-host so it covers exactly the editor area and
+           leaves the sidebar usable; the narrow media query in app.css switches
+           it to fixed so a phone gets a full-screen panel. -->
+      <div id="settings-panel" role="dialog" aria-label="Settings" tabindex="-1" hidden></div>
+    </main>
+  </div>
+  <footer id="statusbar">
+    <span id="status-title"></span>
+    <span id="status-save">saved</span>
+    <!-- Note zoom. Hidden here and shown by ui/statusbar.js while the open
+         note is zoomed (ui/zoom.js): at 100% there is nothing to say. -->
+    <button id="status-zoom" class="icon-button" type="button" hidden></button>
+    <span id="status-build"></span>
+    <!-- No title and no state class here: ui/statusbar.js owns both, because
+         the spellcheck state comes from localStorage, not from the markup. -->
+    <button id="status-spell" class="icon-button" type="button">abc</button>
+    <!-- Sync state. Hidden here and shown by ui/statusbar.js only once a server
+         is configured: with no sync there is nothing to report. -->
+    <button id="status-sync" class="icon-button" type="button" hidden></button>
+    <!-- Save to disk. Hidden here and shown by ui/statusbar.js for scratch
+         buffers only, and only where the File System Access API exists. -->
+    <button id="status-saveas" class="icon-button" type="button" title="Save to disk…" hidden>⤓</button>
+    <button id="status-update" class="icon-button" type="button" title="Check for update">↻</button>
+  </footer>
+  <script type="module" src="./js/main.js"></script>
+  <script>
+    // updateViaCache "none": update checks must bypass the HTTP cache for both
+    // sw.js and its importScripts'd precache list, or deploys go unnoticed.
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" });
+    }
+  </script>
+</body>
+</html>

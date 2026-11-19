@@ -1,0 +1,1189 @@
+// @ts-check
+// Bootstrap only: open storage, build the store, register commands, mount the
+// UI, start. All behavior lives in the modules (architecture.md §6).
+// Frameworkless on purpose.
+
+import {
+  deleteBuffer,
+  getAllHandles,
+  getSetting,
+  MAIN_WORKSPACE,
+  openDb,
+  putSetting,
+} from "./storage/idb.js";
+import { openFilePicker } from "./storage/fsa.js";
+import { handleFromRoot, isNativeHandle, pruneRoots } from "./storage/native.js";
+import {
+  checkForUpdate,
+  hasDisk,
+  isDesktop,
+  requestPersistence,
+} from "./model/capabilities.js";
+import {
+  createDocStore,
+  DEFAULT_SPACE,
+  firstLineTitle,
+  KEYRING_ID,
+  KEYRING_SPACE,
+  titleOf,
+} from "./model/docs.js";
+import { createFolderStore } from "./model/folders.js";
+import { createWorkspaces, workspaceIdFromUrl } from "./model/workspace.js";
+import { register, run } from "./commands/registry.js";
+import { createSyncClient, isValidSpace } from "./sync/client.js";
+import * as age from "./crypto/age.js";
+import {
+  entryKey,
+  KeyRing,
+  keyringContentFor,
+  mergeKeyringContent,
+  readKeyringContent,
+} from "./crypto/keyring.js";
+import * as codec from "./model/codec.js";
+import { mountEditor } from "./editor/editor.js";
+import { mountTransforms } from "./editor/transform.js";
+import { detectedLanguages, isEnabled, setEnabled } from "./editor/spellcheck.js";
+import { detectLanguage, segments } from "./editor/textlang.js";
+import { askPassphrase, askText, choose, showBusy, showNote, showSecret } from "./ui/dialog.js";
+import { mountSearch } from "./ui/search.js";
+import { describeAudit, mountSettings } from "./ui/settings.js";
+import { mountSidebar } from "./ui/sidebar.js";
+import { mountStatusbar } from "./ui/statusbar.js";
+import { mountTitle } from "./ui/title.js";
+import { mountShortcuts } from "./ui/shortcuts.js";
+import { closeWorkspaceWindow, mountDesktop, openWorkspaceWindow } from "./ui/desktop.js";
+import { mountResizer } from "./ui/resizer.js";
+import { mountShell } from "./ui/shell.js";
+import { mountTextSize } from "./ui/textsize.js";
+import { mountZoom } from "./ui/zoom.js";
+import { mountWordWrap } from "./ui/wordwrap.js";
+import { mountNewButton } from "./ui/newbutton.js";
+import { mountThumb } from "./ui/thumb.js";
+import { showHistory } from "./ui/history.js";
+
+/** Wrong passphrases the unlock prompt tolerates before it gives up. */
+const UNLOCK_ATTEMPTS = 3;
+
+/** Settings row: the device list notice this device showed last (§26). */
+const AUDIT_SEEN_KEY = "keyring.auditSeen";
+
+/**
+ * A first guess at the device name, so the user usually just presses Enter.
+ * `(pointer: coarse)` is the same test the sync default uses for "is this a
+ * phone" (architecture.md §13.6).
+ */
+function defaultDeviceName() {
+  return window.matchMedia("(pointer: coarse)").matches ? "Phone" : "Desktop";
+}
+
+async function start() {
+  // First: it registers the two size commands and repairs what the inline
+  // boot script in index.html put on :root. Nothing here waits on storage,
+  // so it must not sit behind the openDb await below.
+  mountTextSize();
+
+  requestPersistence();
+  await openDb();
+
+  // Which window this is (architecture.md §14): `?ws=<id>` names a workspace,
+  // no parameter is the main one. Before the stores, which scope by it.
+  const workspaces = createWorkspaces({ id: workspaceIdFromUrl() });
+  await workspaces.load();
+  // Another window upgraded the schema, so it runs a newer build than this
+  // one. The connection is already closed; the reload picks the build up.
+  window.addEventListener("vrtti:db-versionchange", () => location.reload());
+
+  // Before the store: the store takes the keyring as a dependency, because the
+  // codec stage of its write pipeline encrypts and decrypts through it, and it
+  // follows the keyring's lock state (architecture.md §5, §13.4).
+  const keyring = new KeyRing();
+  await keyring.load();
+
+  // Declared here and assigned below: the store asks the sync client whether a
+  // new document gets a server target, and the client needs the store. Only
+  // store.create() calls that function, long after both objects exist.
+  /** @type {ReturnType<typeof createSyncClient> | undefined} */
+  let sync;
+  const store = createDocStore({
+    keyring,
+    syncDefault: () => Boolean(sync && sync.syncDefaultOn()),
+    // Same late binding as syncDefault (§25). Before the client exists the
+    // answer is a device with no space setting, never Not here: a routed
+    // change arriving that early must not detach a record.
+    spaces: {
+      defaultSpace: () => (sync ? sync.defaultSpace() : DEFAULT_SPACE),
+      modeOf: (space) => (sync ? sync.modeOf(space) : "tab"),
+    },
+    workspaces,
+  });
+  await store.load();
+
+  sync = createSyncClient({ store, keyring });
+  // Before store.start(): the first buffer of a fresh install is created there,
+  // and whether it syncs depends on the setting this reads.
+  await sync.load();
+
+  // Peers are read after store.load(), because the keyring resolves "all
+  // devices" against the hidden keyring record the store just read (§13.3).
+  /** Point the keyring at the hidden record: it resolves trust from it (§21). */
+  function refreshPeers() {
+    keyring.setContent(readKeyringContent(store.keyringRecord()));
+  }
+  refreshPeers();
+  // The record also changes when a pull merges another device into it, so the
+  // peers follow the record itself and not the one command that writes it.
+  store.events.addEventListener("system", refreshPeers);
+  // Once per device, here and not later: a device confirmed before §26 is
+  // stored as an id only, and its keys are pinned from this device's own
+  // copy of the record before the first pull of this session can change it
+  // (architecture.md §26). A no-op at every later start.
+  await keyring
+    .migratePins()
+    .catch((err) => console.log("[vrtti] pinning the confirmed devices failed", err));
+
+  /**
+   * Write a new keyring content into the hidden record (architecture.md
+   * §13.3, §21). Dirty when synced, so the other devices learn of it.
+   * @param {import("./crypto/keyring.js").KeyringContent} content
+   */
+  async function writeKeyring(content) {
+    const previous = store.keyringRecord();
+    const now = Date.now();
+    /** @type {import("./storage/idb.js").BufferRecord} */
+    const record = {
+      id: KEYRING_ID,
+      kind: "keyring",
+      createdAt: now,
+      ...previous,
+      content: JSON.stringify(content),
+      updatedAt: now,
+    };
+    if (record.sync) record.sync = { ...record.sync, dirty: true };
+    await store.putSystemRecord(record);
+  }
+
+  /**
+   * After an unlock: the record learns this device's signing key and its
+   * self-approved recovery keys, once (architecture.md §21). A device from
+   * before the unit gets its key in the same unlock.
+   */
+  async function ensureOwnEntry() {
+    if (!keyring.isUnlocked) return;
+    const next = keyring.selfUpdate();
+    if (next) await writeKeyring(next);
+  }
+
+  // Dialogs a cancelled answer must not repeat in this session; the Settings
+  // device list keeps a button for each.
+  /** @type {Set<string>} */
+  const dismissedJoins = new Set();
+  /** @type {Set<string>} */
+  const dismissedApprovers = new Set();
+  let offering = false;
+
+  /**
+   * The two questions of §21, asked where they can be answered: this window
+   * has focus, the keyring is unlocked, and no other dialog is open. One
+   * question at a time; the record write after each answer runs this again.
+   */
+  async function offerApprovals() {
+    if (offering || !keyring.isUnlocked || !document.hasFocus()) return;
+    if (document.querySelector("dialog[open]")) return;
+    offering = true;
+    try {
+      // By entry, not by device id: a second entry under the same id is a
+      // different question, and a "no" to one must not silence the other.
+      const approver = keyring
+        .pendingApprovers()
+        .find((d) => !dismissedApprovers.has(entryKey(d)));
+      if (approver) {
+        const key = entryKey(approver);
+        if (!(await run("crypto.confirm", key))) dismissedApprovers.add(key);
+        return;
+      }
+      const join = keyring.pendingJoins().find((d) => !dismissedJoins.has(entryKey(d)));
+      if (join) {
+        const key = entryKey(join);
+        if (!(await run("crypto.approve", key))) dismissedJoins.add(key);
+      }
+    } finally {
+      offering = false;
+    }
+  }
+  store.events.addEventListener("system", () => void offerApprovals());
+  keyring.addEventListener("change", () => {
+    if (!keyring.isUnlocked) return;
+    void ensureOwnEntry().then(offerApprovals);
+  });
+  window.addEventListener("focus", () => void offerApprovals());
+
+  /** The notice text this window showed or found stored already. */
+  let auditShown = "";
+
+  /**
+   * Tell the user, once, when the device list holds something this device
+   * refuses to believe (architecture.md §26): other keys under its own
+   * name, two sets of keys for one device, a confirmed device that could
+   * not be pinned. Once per finding, not per start: the text shown last is
+   * stored, and the same text is not shown again. Settings › Security keeps
+   * the line for as long as it is true. Same conditions as the questions
+   * above: the window has focus and no other dialog is open.
+   */
+  async function reportAudit() {
+    const text = describeAudit(keyring.audit());
+    if (!text || text === auditShown) return;
+    if ((await getSetting(AUDIT_SEEN_KEY)) === text) {
+      auditShown = text;
+      return;
+    }
+    // Tested after the read, in the same tick as the dialog below: an
+    // approval question may have opened while the read was out.
+    if (!document.hasFocus()) return;
+    const open = document.querySelector("dialog[open]");
+    if (open) {
+      // A start with an encrypted note on screen opens the unlock prompt
+      // first, and nothing else would call this again once it is answered.
+      open.addEventListener("close", () => void reportAudit(), { once: true });
+      return;
+    }
+    auditShown = text;
+    // Not awaited, so nothing can open between the test and the dialog. A
+    // second window that gets focus while this one shows it reads the row.
+    void putSetting(AUDIT_SEEN_KEY, text);
+    await showNote({ title: "Check your devices", text });
+  }
+  store.events.addEventListener("system", () => void reportAudit());
+  window.addEventListener("focus", () => void reportAudit());
+
+  // Built on every platform: without a disk backend no directory handle can be
+  // stored, so the store loads nothing and the sidebar draws no section. Only
+  // its entry points are gated, below.
+  // openWindow: a folder asked for in main gets a window of its own in the
+  // shell (architecture.md §14.5); the model must not import the ui.
+  const folders = createFolderStore({ workspaces, openWindow: openWorkspaceWindow });
+  await folders.load();
+
+  // A root in Rust is a standing grant, and a folder this page closed (or a
+  // file it dropped) would leave one behind forever. Once at boot, after both
+  // stores have read the handle store, the page names the roots it still
+  // references and Rust drops the rest (architecture.md §17).
+  if (isDesktop) {
+    getAllHandles()
+      .then((records) => {
+        const roots = records.map((r) => r.handle).filter(isNativeHandle);
+        return pruneRoots([...new Set(roots.map((handle) => handle.root))]);
+      })
+      .catch((err) => console.log("[vrtti] root prune failed", err));
+  }
+
+  register({
+    id: "buffer.new",
+    title: "New buffer",
+    keys: "Alt+KeyN",
+    run: () => store.create(),
+  });
+  register({
+    id: "buffer.close",
+    title: "Close buffer",
+    keys: "Alt+KeyW",
+    // No arg means the active buffer (the shortcut path).
+    run: (id) => {
+      const target = id ?? store.activeId;
+      if (target) return store.close(target);
+    },
+  });
+  // Ctrl+S in the desktop shell (desktop-wrapper-tauri-vs-wails.md §11). The
+  // editor autosaves, so this is Sublime's Ctrl+S mapped onto the two
+  // debounces: flush now, or pick a file when there is none to flush to.
+  // Alt chords stay out on purpose: the user wants the Ctrl set complete or
+  // absent, and in a browser Ctrl+S is not ours to take.
+  register({
+    id: "buffer.save",
+    title: "Save",
+    run: (id) => {
+      const target = id ?? store.activeId;
+      if (!target) return;
+      const record = store.get(target);
+      if (record?.kind === "file" || !hasDisk) return store.saveNow(target);
+      return run("file.saveAs", target);
+    },
+  });
+  register({
+    id: "buffer.activate",
+    title: "Go to buffer",
+    run: (id) => store.activate(id),
+  });
+  register({
+    id: "buffer.reopen",
+    title: "Reopen buffer",
+    run: (id) => store.reopen(id),
+  });
+  // The sidebar drag (architecture.md §9). `before` null puts the buffer last.
+  register({
+    id: "buffer.move",
+    title: "Move buffer",
+    run: ({ id, before }) => store.moveTab(id, before),
+  });
+
+  // Windows (architecture.md §14): a workspace is one window's context. The
+  // browser opens a tab for it; the shell opens a native window (unit 14.4).
+  // The command ids say workspace, the labels say window (§14, Naming).
+  register({
+    id: "workspace.new",
+    title: "New window",
+    keys: "Alt+Shift+KeyN",
+    run: async () => {
+      const workspace = await workspaces.create();
+      openWorkspaceWindow(workspace.id);
+      return workspace;
+    },
+  });
+  register({
+    id: "workspace.close",
+    title: "Close window",
+    // The shell closes any window (Ctrl+Shift+W reaches it as a keydown on
+    // Windows); a browser closes only a tab it opened itself.
+    run: () => closeWorkspaceWindow(workspaces.id),
+  });
+  register({
+    id: "workspace.dissolve",
+    title: "Dissolve workspace",
+    run: (id) => workspaces.dissolve(id),
+  });
+  register({
+    id: "buffer.rename",
+    title: "Rename buffer",
+    // Two renames behind one id: a scratch buffer gets a stored label, a
+    // file-backed one gets a new name on disk. The caller says what it wants
+    // renamed, never how; the record decides which path that is.
+    // An empty name clears a label and puts the first line back in charge.
+    run: async ({ id, name = "" } = {}) => {
+      const target = id ?? store.activeId;
+      const record = target ? store.get(target) : undefined;
+      if (!record || !target) return false;
+      if (record.kind !== "file") return store.setTitle(target, name);
+      try {
+        if (!(await store.renameFile(target, name))) return false;
+      } catch (err) {
+        // A taken name is the common case here, and the row keeps the old one.
+        console.log("[vrtti] rename failed", name, err);
+        return false;
+      }
+      await refreshFolders(record);
+      return true;
+    },
+  });
+  register({
+    id: "spell.toggle",
+    title: "Toggle spellcheck",
+    // Returns the new state, so a caller can render the indicator without
+    // reaching into the editor module itself.
+    run: () => {
+      setEnabled(!isEnabled());
+      return isEnabled();
+    },
+  });
+  register({
+    id: "syntax.set",
+    title: "Set syntax",
+    // The argument is a language id; editor/lang.js exports LANGUAGES, the
+    // list a future picker (command palette or settings row) would offer.
+    // There is no UI for it yet, so nothing but a test dispatches this today.
+    // Marked "user", which is what stops later pastes from re-detecting.
+    run: (lang) => {
+      const target = store.activeId;
+      if (target) return store.setLang(target, lang, "user");
+    },
+  });
+  register({
+    id: "storage.persist",
+    title: "Request persistent storage",
+    // Also called once at startup. The command exists so the settings panel
+    // asks through the registry like every other UI (architecture.md §9).
+    run: () => requestPersistence(),
+  });
+  register({
+    id: "app.update",
+    title: "Check for update",
+    run: (onStatus) => checkForUpdate(onStatus),
+  });
+
+  // Encryption (architecture.md §5, §13.2). No keyboard shortcuts: setup runs
+  // once in a lifetime and unlock is dispatched by whatever needs a key.
+  /**
+   * One sync run, awaited through the status: the leader resolves its own
+   * run, a mirror window hears the leader's status over the channel
+   * (architecture.md §14.3). Resolves with the final state, or "timeout".
+   * @returns {Promise<string>}
+   */
+  function syncOnce() {
+    return new Promise((resolve) => {
+      /** @param {Event} event */
+      const done = (event) => {
+        const state = /** @type {CustomEvent} */ (event).detail?.state;
+        if (state === "syncing") return;
+        finish(state ?? "unknown");
+      };
+      /** @param {string} state */
+      const finish = (state) => {
+        sync.events.removeEventListener("status", done);
+        clearTimeout(timer);
+        resolve(state);
+      };
+      const timer = setTimeout(() => finish("timeout"), 15000);
+      sync.events.addEventListener("status", done);
+      void sync.syncNow();
+    });
+  }
+
+  register({
+    id: "crypto.setup",
+    title: "Set up encryption",
+    run: async () => {
+      if (keyring.isSetUp) return false;
+      // The join-order guard (architecture.md §20). A device that sets up
+      // before it has pulled the keyring mints a second recovery key, and
+      // the merge keeps both for ever. So with a server configured and no
+      // keyring record here, one sync runs first; the record then arrives or
+      // the server has none. Only an unreachable server leaves it open, and
+      // then the user decides.
+      if (sync.isConfigured && !store.keyringRecord()) {
+        const busy = showBusy("Looking for a keyring on the server…");
+        let state = "";
+        try {
+          state = await syncOnce();
+        } finally {
+          busy.close();
+        }
+        if (!store.keyringRecord() && state !== "idle") {
+          const answer = await choose({
+            title: "The server did not answer",
+            options: [
+              {
+                id: "later",
+                label: "Set up later",
+                hint: "If another device already uses encryption, try again when the server answers. This device then joins it.",
+              },
+              {
+                id: "anyway",
+                label: "Set up anyway",
+                hint: "This device starts alone, with a recovery key of its own. The devices join up later, and both recovery keys stay valid.",
+              },
+            ],
+          });
+          if (answer !== "anyway") return false;
+        }
+      }
+      const deviceName = await askText({
+        title: "Set up encryption",
+        label: "Device name",
+        value: defaultDeviceName(),
+        hint: "Your other devices show this name, and a note's history does too. It cannot change later.",
+      });
+      if (deviceName === null) return false;
+      const passphrase = await askPassphrase({
+        title: "Choose a passphrase",
+        confirm: true,
+        hint:
+          "It protects the key on this device, and each device has its own. " +
+          "There is no reset. If you forget it, this device cannot read " +
+          "encrypted notes again.",
+      });
+      if (passphrase === null) return false;
+
+      const busy = showBusy("Generating keys…");
+      /** @type {string | null} */
+      let recoveryIdentity;
+      try {
+        // A keyring record already here came from the server: this device is
+        // joining a keyring that exists. It adopts the recovery recipients and
+        // mints no second paper key, so setup() returns null and the recovery
+        // dialog below is skipped (architecture.md §13.2, §13.3).
+        const previous = store.keyringRecord();
+        const existing = readKeyringContent(previous);
+        ({ recoveryIdentity } = await keyring.setup(passphrase, {
+          deviceName,
+          joining: Boolean(existing),
+        }));
+        const now = Date.now();
+        /** @type {import("./storage/idb.js").BufferRecord} */
+        const record = {
+          id: KEYRING_ID,
+          kind: "keyring",
+          createdAt: now,
+          ...previous,
+          // Union, never replace: the pulled list already names the other
+          // devices, and dropping them would leave them out of every future
+          // "all my devices" recipient set (architecture.md §13.3).
+          // The pulled list leads and this device's entry goes last, the
+          // order every later merge keeps.
+          content: JSON.stringify(
+            mergeKeyringContent(keyringContentFor(keyring), existing)
+          ),
+          updatedAt: now,
+        };
+        // The other devices have to learn about this one. Harmless with no
+        // server configured: the flag simply waits for one.
+        if (record.sync) record.sync = { ...record.sync, dirty: true };
+        // Emits "system", which refreshes the peers.
+        await store.putSystemRecord(record);
+      } finally {
+        busy.close();
+      }
+
+      if (recoveryIdentity) {
+        await showSecret({
+          title: "Recovery key",
+          text: recoveryIdentity,
+          note:
+            "Shown once, never stored. Keep it on paper or in a password " +
+            "manager. If you lose every device, this key still opens your " +
+            "notes with the age command line tool. vrtti itself has no place " +
+            "to enter it.",
+        });
+      } else {
+        // Joined the devices that exist: nothing else on this screen would
+        // say so, and the next step happens on another device.
+        await showNote({
+          title: "This device joined your devices",
+          text:
+            "A device you already use must approve it. Unlock that device, " +
+            "and it asks for the pairing code shown under Settings › Security " +
+            "here.",
+        });
+      }
+      return true;
+    },
+  });
+  register({
+    id: "crypto.unlock",
+    title: "Unlock encryption",
+    // Resolves true when the identity is in memory afterwards, so a caller that
+    // hit a locked document can simply retry its own work.
+    run: async () => {
+      if (!keyring.isSetUp) return false;
+      if (keyring.isUnlocked) return true;
+      let message = "";
+      for (let attempt = 0; attempt < UNLOCK_ATTEMPTS; attempt++) {
+        const passphrase = await askPassphrase({ title: "Unlock", message });
+        if (passphrase === null) return false;
+        const busy = showBusy("Unlocking…");
+        try {
+          await keyring.unlock(passphrase);
+          return true;
+        } catch (err) {
+          // typage reports a wrong passphrase and a corrupt blob with the same
+          // error, and the user can only act on the first, so say that.
+          message = "Wrong passphrase. Try again.";
+          console.log("[vrtti] unlock failed", err);
+        } finally {
+          busy.close();
+        }
+      }
+      statusbar.notice("still locked");
+      return false;
+    },
+  });
+  register({
+    id: "crypto.lock",
+    title: "Lock encryption",
+    run: () => keyring.lock(),
+  });
+  // The two sides of a join (architecture.md §21). Both take a device id from
+  // the record; offerApprovals() dispatches them, and the Settings device
+  // list has a button for each.
+  register({
+    id: "crypto.approve",
+    title: "Approve a device",
+    // The argument is an entryKey (crypto/keyring.js), not a device id: two
+    // entries can carry one id, and the user approves exactly one of them.
+    run: async (key) => {
+      if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
+      const device = keyring.entry(key);
+      if (!device) return false;
+      // A second entry under the id of a device this one already trusts
+      // (architecture.md §26). The honest case is a device that set up
+      // encryption again; the other case is the server using a trusted
+      // name, so the question must not read like a first join.
+      const again = keyring.trustedIds().has(device.id);
+      let message = "";
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const code = await askText({
+          title: "“" + device.name + "” wants to join" + (again ? " again" : ""),
+          label: "Pairing code",
+          hint:
+            (message ? message + " " : "") +
+            (again
+              ? "This device is already trusted, and this entry has other keys. Go on only if you set up encryption on that device a second time. "
+              : "") +
+            "Type the six-digit pairing code from Settings › Security on that device. If it does not match, that device is not yours. Cancel.",
+          placeholder: "000 000",
+        });
+        if (code === null) return false;
+        const next = keyring.approve(key, code);
+        if (next) {
+          await writeKeyring(next);
+          return true;
+        }
+        message = "The code does not match.";
+      }
+      statusbar.notice("not approved");
+      return false;
+    },
+  });
+  register({
+    id: "crypto.confirm",
+    title: "Confirm an approving device",
+    run: async (key) => {
+      const device = keyring.entry(key);
+      if (!device || !device.signKey) return false;
+      const answer = await choose({
+        title: "Approved by “" + device.name + "”",
+        options: [
+          {
+            id: "yes",
+            label: "Yes, that is my device",
+            hint:
+              "Its fingerprint is " + keyring.fingerprint(device) +
+              ". Settings › Security on that device shows the same sixteen characters.",
+          },
+          {
+            id: "no",
+            label: "No",
+            hint: "This device then encrypts for itself only, and your other devices cannot read its notes. You can confirm later in Settings › Security.",
+          },
+        ],
+      });
+      if (answer !== "yes") return false;
+      return keyring.confirm(key);
+    },
+  });
+
+  // Per-document encryption (architecture.md §13.4). The commands own the
+  // prompts; the store owns the records and refuses to work while locked.
+  register({
+    id: "doc.encrypt",
+    title: "Encrypt note",
+    // No arg means the active buffer, like buffer.close.
+    run: async (id) => {
+      const target = id ?? store.activeId;
+      if (!target) return false;
+      // The first encryption is also the moment encryption gets set up. Both
+      // steps return false when the user walks away from their dialog.
+      if (!keyring.isSetUp && !(await run("crypto.setup"))) return false;
+      if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
+      const preset = await choose({
+        title: "Encrypt to",
+        options: [
+          {
+            id: "all-devices",
+            label: "All my devices",
+            hint: "Every trusted device, plus the recovery key.",
+          },
+          {
+            id: "this-device",
+            label: "This device only",
+            hint: "This device and the recovery key. Other devices see only the name.",
+          },
+        ],
+      });
+      if (!preset) return false;
+      // The label is plaintext everywhere, server included (architecture.md
+      // §5). Prefilled with the first line, so the user sees exactly what will
+      // stay readable and can change it before it leaves the device. A file
+      // is prefilled with its name instead: the name is plaintext on disk
+      // already, and it is what the other devices see, because a file-backed
+      // doc syncs as a scratch doc (§13.5).
+      const record = store.get(target);
+      const label = await askText({
+        title: "Name the encrypted note",
+        label: "Name",
+        value:
+          record?.title ||
+          (record?.file ? record.file.name : firstLineTitle(record?.content)),
+        hint: "The name is not encrypted. It shows in the sidebar, in the file name and on the server. Leave it empty for no name.",
+        allowEmpty: true,
+      });
+      if (label === null) return false;
+      try {
+        await store.encrypt(target, /** @type {any} */ (preset), label);
+      } catch (err) {
+        // A file that cannot be renamed to `.age` (a taken name, a lost
+        // permission) stays as it was; the record was not touched.
+        console.log("[vrtti] encrypt failed", err);
+        statusbar.notice("encrypt failed");
+        return false;
+      }
+      await refreshFolders(record);
+      return true;
+    },
+  });
+  register({
+    id: "doc.decrypt",
+    title: "Decrypt note",
+    run: async (id) => {
+      const target = id ?? store.activeId;
+      if (!target) return false;
+      // Decrypting needs the key as much as reading does: the plaintext comes
+      // out of the ciphertext, and nothing else holds it.
+      if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
+      const record = store.get(target);
+      // A synced note goes back to the server readable, and the server keeps
+      // what it gets: that deserves one question. A local note is a local
+      // change only, and Encrypt undoes it.
+      if (record?.sync) {
+        const answer = await choose({
+          title: "Decrypt “" + titleOf(record) + "”?",
+          options: [
+            {
+              id: "yes",
+              label: "Decrypt",
+              hint: "The readable text goes to the server as a new revision. The encrypted revisions stay there.",
+            },
+          ],
+        });
+        if (answer !== "yes") return false;
+      }
+      try {
+        await store.decrypt(target);
+      } catch (err) {
+        console.log("[vrtti] decrypt failed", err);
+        statusbar.notice("decrypt failed");
+        return false;
+      }
+      await refreshFolders(record);
+      return true;
+    },
+  });
+
+  /**
+   * An open folder section still lists a file's old name after a rename on
+   * disk. Re-listing costs one directory read per open folder, and only a
+   * file-backed doc pays it.
+   * @param {import("./storage/idb.js").BufferRecord | undefined} record
+   */
+  async function refreshFolders(record) {
+    if (record?.kind !== "file") return;
+    for (const folderId of [...folders.folders.keys()]) await folders.refresh(folderId);
+  }
+
+  // Sync (architecture.md §3, §13.6). Registered on every platform: sync is a
+  // server target, and every platform can hold one. The client stays inert
+  // until a URL and a token exist, so each of these is a no-op until then.
+  register({
+    id: "sync.configure",
+    title: "Set the sync server",
+    // The settings rows dispatch this instead of calling the client, so the
+    // panel keeps its rule: an item never writes state itself.
+    run: (next) => sync.configure(next ?? {}),
+  });
+  register({
+    id: "doc.sync.on",
+    title: "Sync this note",
+    // No arg means the active buffer, like buffer.close. `{ id, space }` is
+    // the row menu's "Sync to" (§25); a bare id goes to the default space.
+    run: async (arg) => {
+      const { id, space } = typeof arg === "object" && arg ? arg : { id: arg, space: undefined };
+      const target = id ?? store.activeId;
+      if (!target) return false;
+      if (space !== undefined && (!isValidSpace(space) || space === KEYRING_SPACE)) return false;
+      if (!sync.isConfigured) {
+        // A log, not a dialog: the row menu already carries the hint that says
+        // where a server is set, and this path is only reachable around it.
+        console.log("[vrtti] sync: no server configured");
+        return false;
+      }
+      await store.setSync(target, true, space);
+      return true;
+    },
+  });
+  register({
+    id: "doc.sync.off",
+    title: "Stop syncing this note",
+    // The record keeps its text and pushes a `detached` tombstone, so the
+    // other devices keep their copies too (architecture.md §3).
+    run: async (id) => {
+      const target = id ?? store.activeId;
+      if (!target) return false;
+      await store.setSync(target, false);
+      return true;
+    },
+  });
+  register({
+    id: "sync.now",
+    title: "Sync now",
+    run: () => sync.syncNow(),
+  });
+  register({
+    id: "sync.all",
+    title: "Sync every open note",
+    // The bulk switch of architecture.md §3: it only sets the per-document
+    // flag, one document at a time. There is no second kind of sync target.
+    run: async () => {
+      if (!sync.isConfigured) return false;
+      for (const record of store.openBuffers()) {
+        if (!record.sync) await store.setSync(record.id, true);
+      }
+      return true;
+    },
+  });
+  // Spaces (architecture.md §25).
+  register({
+    id: "remote.open",
+    title: "Open a note from the server",
+    // A click on a From server stub: fetch the note now, open it in THIS
+    // window (not main, where a pulled note goes), and sync it from then on.
+    run: async (id) => {
+      if (!id || !sync.isConfigured) return false;
+      let change;
+      try {
+        change = await sync.fetchDoc(id);
+      } catch (err) {
+        // Gone from the server: the title is all that was left of it.
+        if (/** @type {any} */ (err)?.status === 404) await store.dropRemote(id);
+        else {
+          console.log("[vrtti] fetching a server note failed", id, err);
+          statusbar.notice("could not fetch the note");
+        }
+        return false;
+      }
+      // Deleted or detached since the stub was written: same as gone.
+      if (change.kind !== "text") {
+        await store.dropRemote(id);
+        return false;
+      }
+      // A pull can bring the record in while the fetch is in flight, and
+      // then it may be a tab of another window: reopen goes there instead.
+      if (store.get(id)) {
+        await run("buffer.reopen", id);
+        return true;
+      }
+      await store.createFromChange(change, workspaces.id);
+      await run("buffer.activate", id);
+      return true;
+    },
+  });
+  register({
+    id: "sync.spaceMode",
+    title: "Set what this device does with a space",
+    run: ({ space, mode }) => sync.setSpaceMode(space, mode),
+  });
+  register({
+    id: "sync.defaultSpace",
+    title: "Set where new notes sync to",
+    run: (name) => sync.setDefaultSpace(name),
+  });
+  register({
+    id: "sync.defaultToggle",
+    title: "Sync new notes",
+    // Stores an explicit boolean, which is what takes this device off the
+    // platform default for good (architecture.md §13.6).
+    run: () => sync.toggleSyncDefault(),
+  });
+  register({
+    id: "doc.history",
+    title: "Note history…",
+    run: async (id) => {
+      const target = id ?? store.activeId;
+      const record = target ? store.get(target) : undefined;
+      if (!record || !sync.isConfigured) return false;
+      await showHistory({ record, client: sync, store });
+      return true;
+    },
+  });
+  register({
+    id: "doc.copy",
+    title: "Copy text",
+    // The whole document to the system clipboard. On a phone, a finger
+    // select-all over a long note is the slow part; one menu tap replaces it.
+    // The text comes from the store, not the editor: the row menu may target
+    // a buffer that is not the active one.
+    run: async (id) => {
+      const target = id ?? store.activeId;
+      const record = target ? store.get(target) : undefined;
+      if (!record || !target) return false;
+      // An encrypted body needs the key, as reading it does.
+      if (record.enc && !keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
+      // `statusbar` is declared further down in start(); every run() comes
+      // after the mount, so the reference is never ahead of it.
+      try {
+        // Still inside the click's activation window: a loaded plaintext doc
+        // resolves at once, and a decode or file read takes well under the
+        // seconds browsers grant before a clipboard write needs a new tap.
+        await navigator.clipboard.writeText(await store.textOf(target));
+      } catch (err) {
+        console.log("[vrtti] copy failed", err);
+        statusbar.notice("copy failed");
+        return false;
+      }
+      statusbar.notice("copied");
+      return true;
+    },
+  });
+
+  // Desktop disk files (architecture.md §2, §17). Registered only where some
+  // backend can reach disk, so a Firefox or iOS build has no command that
+  // could ever run.
+  if (hasDisk) {
+    register({
+      id: "file.open",
+      title: "Open file…",
+      run: async () => {
+        try {
+          return await store.createFromFile(await openFilePicker());
+        } catch (err) {
+          // A dismissed picker is a decision, not a failure.
+          if (err && err.name === "AbortError") return;
+          console.log("[vrtti] open file failed", err);
+        }
+      },
+    });
+    register({
+      id: "file.saveAs",
+      title: "Save to disk…",
+      // No arg means the active buffer, like buffer.close.
+      run: async (id) => {
+        const target = id ?? store.activeId;
+        if (!target) return;
+        try {
+          return await store.saveAs(target);
+        } catch (err) {
+          if (err && err.name === "AbortError") return;
+          console.log("[vrtti] save to disk failed", err);
+        }
+      },
+    });
+    register({
+      id: "file.reconnect",
+      title: "Reconnect file",
+      run: (id) => store.reconnect(id),
+    });
+    register({
+      id: "file.unlink",
+      title: "Unlink file",
+      // The note becomes an internal one with the file's text; the file on
+      // disk stays as it is (architecture.md §23).
+      run: async (id) => {
+        const target = id ?? store.activeId;
+        if (!target) return false;
+        try {
+          return Boolean(await store.unlinkFile(target));
+        } catch (err) {
+          // A file that cannot be read has no text to keep: refuse, and the
+          // record stays linked with its marker.
+          console.log("[vrtti] unlink refused", err);
+          return false;
+        }
+      },
+    });
+    register({
+      id: "folder.open",
+      title: "Open folder…",
+      run: async () => {
+        try {
+          return await folders.openFolder();
+        } catch (err) {
+          // A dismissed picker is a decision, not a failure.
+          if (err && err.name === "AbortError") return;
+          console.log("[vrtti] open folder failed", err);
+        }
+      },
+    });
+    register({
+      id: "folder.close",
+      title: "Close folder",
+      run: (id) => folders.closeFolder(id),
+    });
+    register({
+      id: "folder.reconnect",
+      title: "Reconnect folder",
+      run: (id) => folders.reconnect(id),
+    });
+    register({
+      id: "disk.open",
+      title: "Open from the shell",
+      // The shell's own open (architecture.md §24): a file dropped on the
+      // window, an "Open with", a launch argument. Rust registered the root
+      // already and sends it as the arg; the page opens it exactly like a
+      // picker result. Only the shell raises the command, so in a browser
+      // it is registered and idle.
+      run: async (root) => {
+        const handle = handleFromRoot(root);
+        if (!handle) {
+          console.log("[vrtti] disk.open without a root", root);
+          return;
+        }
+        try {
+          if (handle.kind === "directory") return await folders.addFolder(handle);
+          return await store.createFromFile(handle);
+        } catch (err) {
+          console.log("[vrtti] open from the shell failed", handle.rootPath, err);
+        }
+      },
+    });
+    register({
+      id: "folder.openFile",
+      title: "Open file from folder",
+      // The path travels with the handle so the buffer can show where it came
+      // from; the doc store keeps the bare file name as the title.
+      // The default keeps an argument-less dispatch (a future palette) out of
+      // a TypeError; createFromFile then rejects inside the catch below.
+      run: async ({ handle, path } = {}) => {
+        try {
+          return await store.createFromFile(handle, { path });
+        } catch (err) {
+          console.log("[vrtti] open from folder failed", path, err);
+        }
+      },
+    });
+  }
+
+  const host = /** @type {HTMLElement} */ (document.getElementById("editor-host"));
+  // Kept, unlike before: search in files reveals a hit through this controller
+  // (architecture.md §16).
+  const editor = mountEditor(host, store);
+  // View > Word Wrap in the desktop shell. Applied from this device's stored
+  // value now, before the first buffer goes up.
+  mountWordWrap(editor);
+  // Edit > Line, Convert Case, Sort Lines in the desktop shell: the ids of
+  // editor/transform.js, run on this view.
+  mountTransforms(editor);
+  // Ctrl+wheel over the editor. Needs the host for the wheel and the CSS
+  // variable, and nothing from the editor controller.
+  const zoom = mountZoom(host, store);
+  // Sublime's Ctrl+1 (focus group 1), the partner of Ctrl+0 in ui/sidebar.js.
+  // In a browser tab Ctrl+1 is "first tab" and may never arrive; it is for
+  // the installed app and the desktop shell. Escape in the sidebar does the
+  // same without the chord.
+  register({
+    id: "editor.focus",
+    title: "Focus editor",
+    keys: "Ctrl+Digit1",
+    run: () => {
+      run("sidebar.autoclose");
+      editor.view.focus();
+    },
+  });
+
+  // Mounted before its command, because the command dispatches into the
+  // controller the mount returns. The sidebar button below dispatches the id.
+  const settings = mountSettings({ keyring, sync, store });
+  register({
+    id: "settings.toggle",
+    title: "Settings",
+    run: () => settings.toggle(),
+  });
+  // The panel covers the editor, so whatever opens a document from the
+  // sidebar (a row, a search hit, the "+") closes it first, or the document
+  // opens behind it.
+  register({
+    id: "settings.close",
+    title: "Close settings",
+    run: () => settings.close(),
+  });
+
+  const search = mountSearch({ store, folders, workspaces, editor });
+  register({
+    id: "search.inFiles",
+    title: "Find in files…",
+    // The one Ctrl chord the page takes (ui/shortcuts.js). In the shell it can
+    // arrive twice, as a menu event and as a keydown, so open() is idempotent
+    // and never a toggle (architecture.md §16).
+    keys: "Ctrl+Shift+KeyF",
+    run: () => search.open(),
+  });
+
+  // Before the sidebar: its rows dispatch sidebar.autoclose, and before
+  // mountShortcuts, which snapshots the chord table once.
+  mountShell();
+  mountNewButton();
+  mountThumb();
+  mountSidebar(store, folders, sync);
+  const statusbar = mountStatusbar(store, sync, zoom);
+  mountTitle(store, { secondary: workspaces.id !== MAIN_WORKSPACE });
+  mountShortcuts();
+  mountDesktop({
+    workspaces,
+    folders,
+    isBlankBuffer: (id) => {
+      const record = store.get(id);
+      return !record || (record.kind !== "file" && !record.enc && !(record.content ?? "").trim());
+    },
+  });
+  mountResizer();
+
+  await store.start();
+  folders.start();
+  workspaces.start({ isDesktop });
+  // After the store is up and listening to the keyring: an answer flips the
+  // locked placeholders to text.
+  keyring.askUnlock();
+  void reportAudit();
+  // Last: its first run pulls, and a pull emits "replace" and "active" into UI
+  // that has to be mounted already. One client per origin (architecture.md
+  // §14.3, the lock ships with §14.2): the window that holds the lock runs
+  // the schedule, the others keep their config loaded and wait. The lock
+  // releases when its window closes, and the next request in line starts.
+  if (navigator.locks) {
+    navigator.locks
+      .request("vrtti:sync", () => {
+        sync.start();
+        return new Promise(() => {});
+      })
+      .catch((err) => console.log("[vrtti] sync lock", err));
+  } else {
+    sync.start();
+  }
+
+  // Exposed for the Playwright checks; the UI itself never calls these.
+  // @ts-ignore - deliberate global test hook
+  window.vrtti = {
+    buffers: store.buffers,
+    workspaces,
+    get activeId() {
+      return store.activeId;
+    },
+    createBuffer: () => run("buffer.new"),
+    closeBuffer: (id) => run("buffer.close", id),
+    activateBuffer: (id) => run("buffer.activate", id),
+    setSyntax: (lang) => run("syntax.set", lang),
+    renameBuffer: (id, name) => run("buffer.rename", { id, name }),
+    toggleSidebar: () => run("sidebar.toggle"),
+    deleteBuffer,
+    // Crypto surface for the checks. The UI reaches all of this through
+    // commands and the settings panel; nothing here is an app code path.
+    keyring,
+    codec,
+    age,
+    keyringRecord: () => store.keyringRecord(),
+    textOf: (id) => store.textOf(id),
+    // One body per note (architecture.md §23).
+    body: (id) => store.body(id),
+    unlinkFile: (id) => store.unlinkFile(id),
+    stampRecentFiles: () => store.stampRecentFiles(),
+    checkExternalChanges: () => store.checkExternalChanges(),
+    saveNow: (id) => store.saveNow(id),
+    reopen: (id) => store.reopen(id),
+    encrypt: (id, preset) => store.encrypt(id, preset),
+    decrypt: (id) => store.decrypt(id),
+    forkConflict: (id) => store.forkConflict(store.get(id)),
+    // Sync surface for the checks (architecture.md §13.6). The app itself
+    // reaches all of this through commands and the settings panel.
+    sync,
+    applyRemote: (change) => store.applyRemote(change),
+    // From server stubs (architecture.md §25).
+    remotes: () => store.remotes(),
+    createFromChange: (change, ws) => store.createFromChange(change, ws ?? workspaces.id),
+    // Any command by id, for the checks that drive one with no UI yet.
+    run,
+    dirtyRecords: () => store.dirtyRecords(),
+    trashed: () => store.trashed(),
+    restore: (id) => store.restore(id),
+    settings: { get: getSetting, put: putSetting },
+    // Spellcheck surface for the checks (architecture.md §11): the language
+    // the last pass found, and the detector itself for table-driven cases.
+    spell: { languages: detectedLanguages, detect: detectLanguage, segments },
+  };
+}
+
+start().catch((err) => console.error("[vrtti] startup failed", err));
