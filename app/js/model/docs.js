@@ -740,7 +740,7 @@ export function createDocStore({
     if (record.sync) {
       record.updatedAt = now;
       if (record.sync.tombstone === "detached") {
-        // User already clicked Stop syncing ("the text stays on every device"):
+        // User already clicked Stop syncing ("text stays on every device"):
         // never turn a pending detach into a space-wide delete (§28).
         if (record.sync.rev > 0) {
           record.sync = { ...record.sync, dirty: true };

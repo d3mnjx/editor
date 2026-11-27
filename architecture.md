@@ -3720,7 +3720,8 @@ version changes are required (IndexedDB remains v8 with optional record fields).
     the record and handle (pushing `detached` first if synced). Records with
     `file.unwritten` are blocked everywhere (`rowMenu`, Delete mode,
     `Shift+click ×`, `doc.trash`) with `"Unsaved text is not on disk; reconnect
-    or Unlink file first"`.
+    or Unlink file first"`. The `rowMenu` hint says it shorter (`"Text not on
+    disk. Reconnect or unlink."`), because a menu hint has one line.
   - Trashing or permanently deleting a PIN-locked note asks the PIN first.
 
 ### Offline sync state machine and Restore (`model/docs.js`)

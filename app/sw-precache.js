@@ -1,5 +1,5 @@
 self.__PRECACHE = {
-  "version": "de0f74c655dd",
+  "version": "3179f1bf9981",
   "spellVersion": "473062271b5f",
   "app": [
     "./",

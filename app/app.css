@@ -1173,7 +1173,10 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   position: fixed;
   z-index: 40;
   min-width: calc(170px * var(--ui-scale));
-  max-width: calc(260px * var(--ui-scale));
+  /* Wide enough for a hint of about 44 characters on one line, and never
+     wider than the window less the 4px gap that place() keeps on each side
+     (ui/menu.js). */
+  max-width: min(calc(340px * var(--ui-scale)), calc(100vw - 8px));
   padding: 4px;
   border: 1px solid var(--st-selection-border);
   border-radius: 4px;
@@ -1332,8 +1335,14 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   font-variant-numeric: tabular-nums;
 }
 
+/* One line, always: a wrapped hint makes its row a third taller. The menu
+   grows to its max-width first; a longer hint (a long space name) is cut
+   with an ellipsis. Keep hint texts in ui/sidebar.js to about 40 characters. */
 .menu-hint {
   display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   margin-top: 2px;
   font-size: var(--ui-xs);
   line-height: 1.4;

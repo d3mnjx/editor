@@ -693,7 +693,7 @@ describe(
 
       assert.equal(fileResult.survivedExpiry, true);
       assert.equal(fileResult.menuDisabled, true);
-      assert.equal(fileResult.menuHint, "Unsaved text is not on disk; reconnect or Unlink file first");
+      assert.equal(fileResult.menuHint, "Text not on disk. Reconnect or unlink.");
       assert.equal(fileResult.noticeAfterShift, "Unsaved text is not on disk; reconnect or Unlink file first");
       assert.equal(fileResult.survivedShift, true);
       assert.equal(fileResult.survivedDelMode, true);

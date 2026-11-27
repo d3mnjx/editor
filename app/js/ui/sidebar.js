@@ -496,7 +496,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
       // a file that is gone for good.
       items.push({
         label: "Unlink file",
-        hint: "The note stays in vrtti, the file stays on disk",
+        hint: "Note stays here, file stays on disk",
         act: () => run("file.unlink", record.id),
       });
     } else {
@@ -549,7 +549,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
             : {
                 label: record.enc ? "Decrypt" : "Encrypt",
                 disabled: true,
-                hint: "Needs Chrome, Edge or the desktop app to rename the file",
+                hint: "Needs Chrome, Edge or the desktop app",
               }
         );
       } else if (record.enc) {
@@ -580,7 +580,9 @@ export function mountSidebar(store, folders, sync, workspaces) {
               label: "Remove from list",
               danger: true,
               disabled: true,
-              hint: "Unsaved text is not on disk; reconnect or Unlink file first",
+              // Shorter than the status notice of the same refusal: a menu
+              // hint has one line (.menu-hint in app.css).
+              hint: "Text not on disk. Reconnect or unlink.",
             }
           : {
               label: "Remove from list",
@@ -630,7 +632,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
       items.push({
         label: "Restore to " + space,
         swatch: sync?.colorOf(space) || undefined,
-        hint: "Opens in " + space + " and syncs to its devices",
+        // No space name here: the label above has it, and a hint has one line.
+        hint: "Syncs to its devices again",
         act: () => open(() => run("doc.restore", { id: record.id, toSpace: true })),
       });
       items.push({
@@ -685,7 +688,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
           })),
         {
           label: "Stop syncing",
-          hint: "in " + here + " · the text stays on every device",
+          hint: "in " + here + " · text stays on every device",
           act: () => run("doc.sync.off", record.id),
         },
       ];
