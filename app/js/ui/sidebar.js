@@ -594,8 +594,12 @@ export function mountSidebar(store, folders, sync, workspaces) {
       items.push({
         label: "Move to trash",
         danger: true,
+        // "for everyone", not "on this device": the deleted mark moves the
+        // note to the Trash of every device in the space, and each keeps it
+        // 30 days (§28). The old "Deletes in … on this device" read as if the
+        // other devices lost the note for good.
         hint: record.sync?.space
-          ? "Deletes in " + record.sync.space + " · 30-day Trash on this device"
+          ? "Trashed for everyone in " + record.sync.space + " · 30 days"
           : "Keeps in Trash for 30 days",
         act: () => run("doc.trash", record.id),
       });
@@ -611,7 +615,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
       {
         label: "Move to trash",
         danger: true,
-        hint: "Deletes in " + stub.space + " · 30-day Trash on this device",
+        hint: "Trashed for everyone in " + stub.space + " · 30 days",
         act: () => run("remote.trash", stub.id),
       },
     ];
