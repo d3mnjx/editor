@@ -661,7 +661,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
   /**
    * "Sync to <space>" for an unsynced note, the New notes space first (§27),
    * and for a synced one "Move to <space>" for each other space of this
-   * device, then "Stop syncing" with its space in the hint (§27). The origin
+   * device (§27). A synced note has no "Stop syncing": it leaves its space
+   * through "Move to trash" and "Restore as local". The origin
    * device is the hint of a move: it is what tells a lent note from one of
    * the space's own. Flat items, since the menu has no submenus and two or
    * three spaces need none.
@@ -677,21 +678,14 @@ export function mountSidebar(store, folders, sync, workspaces) {
     if (record.sync) {
       const here = record.sync.space ?? "";
       const from = originName(record);
-      return [
-        ...mine
-          .filter((name) => name !== here)
-          .map((name) => ({
-            label: "Move to " + name,
-            swatch: sync.colorOf(name) || undefined,
-            hint: from ? "from " + from : undefined,
-            act: () => run("doc.move", { id: record.id, space: name }),
-          })),
-        {
-          label: "Stop syncing",
-          hint: "in " + here + " · text stays on every device",
-          act: () => run("doc.sync.off", record.id),
-        },
-      ];
+      return mine
+        .filter((name) => name !== here)
+        .map((name) => ({
+          label: "Move to " + name,
+          swatch: sync.colorOf(name) || undefined,
+          hint: from ? "from " + from : undefined,
+          act: () => run("doc.move", { id: record.id, space: name }),
+        }));
     }
     if (!mine.length) {
       return [{ label: "Sync", disabled: true, hint: "Make a space in Settings › Spaces first" }];

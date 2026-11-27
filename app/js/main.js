@@ -1341,26 +1341,13 @@ async function start() {
         if (answer !== "yes") return false;
       }
       try {
-        await store.setSync(target, true, into);
+        await store.attachSync(target, into);
         sidebar?.unhideFor(store.get(target));
       } catch (err) {
         console.log("[vrtti] sync on failed", err);
         statusbar.notice("sync failed");
         return false;
       }
-      return true;
-    },
-  });
-  register({
-    id: "doc.sync.off",
-    title: "Stop syncing this note",
-    // The record keeps its text and pushes a `detached` tombstone, so the
-    // other devices keep their copies too (architecture.md §3).
-    run: async (id) => {
-      const target = id ?? store.activeId;
-      if (!target) return false;
-      await store.setSync(target, false);
-      sidebar?.unhideFor(store.get(target));
       return true;
     },
   });
@@ -1486,7 +1473,7 @@ async function start() {
       const space = sync.defaultSpace() ?? (await pickSpace("Sync every open note to"));
       if (!space) return false;
       for (const record of store.openBuffers()) {
-        if (!record.sync && !record.file) await store.setSync(record.id, true, space).catch(() => {});
+        if (!record.sync && !record.file) await store.attachSync(record.id, space).catch(() => {});
       }
       return true;
     },
