@@ -525,7 +525,6 @@ export function mountSidebar(store, folders, sync, workspaces) {
     if (sync?.hasModel) {
       items.push({
         label: "Add diacritics (vllm)",
-        hint: "Sends the paragraphs to the model of your sync server",
         act: () => run("diacritics.model", record.id),
       });
     }
